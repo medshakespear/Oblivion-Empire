@@ -78,10 +78,10 @@ HOK_GM_MILESTONES = [
     (25, "Mythic", "🔮"), (0, "King", "👑"),
 ]
 
-HOK_LANES = ["Baron Lane", "Jungle", "Mid Lane", "Dragon Lane", "Roam"]
+HOK_LANES = ["Clash Lane", "Jungle", "Mid Lane", "Farm Lane", "Roaming"]
 HOK_LANE_EMOJIS: dict[str, str] = {
-    "Baron Lane": "🗡️", "Jungle": "🌿", "Mid Lane": "⚡",
-    "Dragon Lane": "🐉", "Roam": "🌀",
+    "Clash Lane": "⚔️", "Jungle": "🌿", "Mid Lane": "⚡",
+    "Farm Lane":  "🌾", "Roaming": "🌀",
 }
 
 HOK_CLASSES = ["Tank", "Fighter", "Assassin", "Mage", "Marksman", "Support"]
