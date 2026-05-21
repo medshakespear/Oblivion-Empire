@@ -23,7 +23,7 @@ from typing import Optional
 
 from PIL import Image
 
-from bot import (db, save_db, brand, empire_embed, logo_url, log_action,
+from bot import (db, save_db, brand, empire_embed, logo_url, log_action, bot,
                  bot_avatar, _all_hero_names, HERO_IMAGES_DIR,
                  GOLD, CRIMSON, VIOLET, TEAL, EMERALD, STEEL, AMBER,
                  PHANTOM, OBSIDIAN, SEP, SEP2)
@@ -714,48 +714,140 @@ def _save_scores(scores: dict):
 # ══════════════════════════════════════════════════════════════════════
 
 MAFIA_ROLES: dict[str, dict] = {
-    "Mafia":     {"emoji": "🗡️", "team": "mafia",   "desc": "Eliminate a villager each night. Blend in during the day."},
-    "Detective": {"emoji": "🔍", "team": "village", "desc": "Investigate one player per night — learn if they are Mafia."},
-    "Doctor":    {"emoji": "💊", "team": "village", "desc": "Protect one player from elimination each night."},
-    "Villager":  {"emoji": "🏡", "team": "village", "desc": "Vote out the Mafia during the day. Trust no one."},
+    # ── Core roles ─────────────────────────────────────────────────
+    "Mafia": {
+        "emoji": "🗡️", "team": "mafia",
+        "desc": (
+            "You and your allies eliminate one villager every night.\n"
+            "Blend in during the day — vote with the crowd, point fingers,\n"
+            "and avoid suspicion at all costs.\n\n"
+            "**Win condition:** equal or outnumber the Village."
+        ),
+    },
+    "Villager": {
+        "emoji": "🏡", "team": "village",
+        "desc": (
+            "You have no special ability — but your vote is your weapon.\n"
+            "Pay attention, build cases, and trust your instincts.\n"
+            "The Mafia is hiding among you right now.\n\n"
+            "**Win condition:** eliminate all Mafia."
+        ),
+    },
+    "Doctor": {
+        "emoji": "💊", "team": "village",
+        "desc": (
+            "Each night, choose one player to protect.\n"
+            "If the Mafia targets them, they survive — and you stay alive too.\n"
+            "You can protect yourself, but don't rely on it.\n\n"
+            "**Win condition:** eliminate all Mafia."
+        ),
+    },
+    "Detective": {
+        "emoji": "🔍", "team": "village",
+        "desc": (
+            "Each night, investigate one player.\n"
+            "You will learn if they are **Mafia** or **Village** — but not their exact role.\n"
+            "Use this information wisely; if Mafia identifies you, you're a priority target.\n\n"
+            "**Win condition:** eliminate all Mafia."
+        ),
+    },
+    # ── Unlocks at 14 players ──────────────────────────────────────
+    "Bodyguard": {
+        "emoji": "🛡️", "team": "village",
+        "desc": (
+            "Each night, choose one player to guard with your life.\n"
+            "If the Mafia targets them — **you die instead, they live.**\n"
+            "If the Mafia targets anyone else, you survive unharmed.\n"
+            "Unlike the Doctor, saving someone costs you everything.\n\n"
+            "**Win condition:** eliminate all Mafia."
+        ),
+    },
+    # ── Unlocks at 20 players ──────────────────────────────────────
+    "Vigilante": {
+        "emoji": "⚡", "team": "village",
+        "desc": (
+            "You carry justice — and a burden.\n"
+            "**Once per game**, you may execute a player at night.\n"
+            "If your target is Mafia → you become a hero.\n"
+            "If your target is innocent → **you die of guilt** the same dawn.\n"
+            "Each other night you must choose to hold your power.\n\n"
+            "**Win condition:** eliminate all Mafia."
+        ),
+    },
 }
 
+# ── How many Mafia per player count ───────────────────────────────
+def _mafia_count(n: int) -> int:
+    """1 Mafia per 7 players."""
+    return max(1, n // 7)
+
 def assign_roles(n: int) -> list[str]:
-    roles: list[str] = ["Mafia"] * max(1, n // 3)
-    if n >= 5: roles.append("Doctor")
-    if n >= 7: roles.append("Detective")
+    """
+    Role assignment rules:
+      7–13  players : 1 Mafia · Doctor · Detective · Villagers
+      14–20 players : 2 Mafia · Doctor · Detective · Bodyguard · Villagers
+      21+   players : 3+ Mafia · Doctor · Detective · Bodyguard · Vigilante · Villagers
+    Doctor and Detective are always present (minimum is 7).
+    """
+    roles: list[str] = ["Mafia"] * _mafia_count(n)
+    # Doctor and Detective always present (min 7 guarantees space for both)
+    roles += ["Doctor", "Detective"]
+    if n >= 14: roles.append("Bodyguard")
+    if n >= 20: roles.append("Vigilante")
     roles += ["Villager"] * (n - len(roles))
-    random.shuffle(roles); return roles
+    random.shuffle(roles)
+    return roles
 
 
 def _all_night_done(game: "MafiaGame") -> bool:
     """True when every special role that is alive has submitted an action."""
+    # Core roles always need an action
     for role in ("Mafia", "Doctor", "Detective"):
         has_role = any(game.get_role(m) == role for m in game.alive)
         if has_role and game.night_actions.get(role) is None:
             return False
+    # Bodyguard must act every night (always guards someone)
+    has_bg = any(game.get_role(m) == "Bodyguard" for m in game.alive)
+    if has_bg and game.night_actions.get("Bodyguard") is None:
+        return False
+    # Vigilante must submit every night (either use power or hold it)
+    # but NOT if they already used their one-time power
+    has_vig = any(game.get_role(m) == "Vigilante" for m in game.alive)
+    if has_vig and not game.vigilante_used and game.night_actions.get("Vigilante") is None:
+        return False
     return True
 
 
 class MafiaGame:
     def __init__(self, channel: discord.TextChannel, host: discord.Member):
-        self.channel = channel; self.host = host
+        self.channel = channel
+        self.host    = host
         self.players: list[discord.Member] = [host]
         self.roles:   dict[int, str]       = {}
         self.alive:   list[discord.Member] = []
         self.phase    = "lobby"
-        self.day      = 0    # day counter
-        self.night    = 0    # night counter
+        self.day      = 0
+        self.night    = 0
         self.votes:   dict[int, int] = {}
         self.night_actions: dict[str, Optional[int]] = {
-            "Mafia": None, "Doctor": None, "Detective": None}
+            "Mafia": None, "Doctor": None, "Detective": None,
+            "Bodyguard": None, "Vigilante": None,
+        }
+        self.vigilante_used  = False   # Vigilante one-time power tracker
         self.lobby_msg:  Optional[discord.Message] = None
-        self._dawn_scheduled = False   # prevent double dawn trigger
+        self._dawn_scheduled = False
 
-    def get_role(self, m: discord.Member) -> str: return self.roles.get(m.id, "Villager")
-    def is_mafia(self, m: discord.Member) -> bool: return MAFIA_ROLES[self.get_role(m)]["team"] == "mafia"
-    def mafia_alive(self)   -> list[discord.Member]: return [m for m in self.alive if self.is_mafia(m)]
-    def village_alive(self) -> list[discord.Member]: return [m for m in self.alive if not self.is_mafia(m)]
+    def get_role(self, m: discord.Member) -> str:
+        return self.roles.get(m.id, "Villager")
+
+    def is_mafia(self, m: discord.Member) -> bool:
+        return MAFIA_ROLES[self.get_role(m)]["team"] == "mafia"
+
+    def mafia_alive(self)    -> list[discord.Member]:
+        return [m for m in self.alive if self.is_mafia(m)]
+
+    def village_alive(self)  -> list[discord.Member]:
+        return [m for m in self.alive if not self.is_mafia(m)]
 
     def check_win(self) -> Optional[str]:
         if not self.mafia_alive(): return "village"
@@ -767,27 +859,45 @@ class MafiaGame:
             self.host = self.alive[0]
 
 
+def _player_count_preview(n: int) -> str:
+    """Return a short description of what roles will be in a game of n players."""
+    mc    = _mafia_count(n)
+    roles = [f"🗡️ ×{mc} Mafia", "💊 Doctor", "🔍 Detective"]
+    if n >= 14: roles.append("🛡️ Bodyguard")
+    if n >= 20: roles.append("⚡ Vigilante")
+    vills = n - mc - 2 - (1 if n >= 14 else 0) - (1 if n >= 20 else 0)
+    roles.append(f"🏡 ×{vills} Villagers")
+    return "  ·  ".join(roles)
+
+
 def _lobby_embed(game: MafiaGame) -> discord.Embed:
+    n        = len(game.players)
+    preview  = _player_count_preview(n) if n >= 7 else "*Need 7 players to preview roles*"
     e = discord.Embed(
         title="🎭  Mafia  —  Lobby",
         description=(
-            f"{SEP}\n*Host: **{game.host.display_name}***\n\n"
-            "Need at least **4 players** to start.\n\n"
-            "🗡️ **Mafia** — 1 per 3 players · eliminate villagers at night\n"
-            "🏡 **Villagers** — vote out Mafia during the day\n"
-            "💊 **Doctor** — protect someone per night *(5+ players)*\n"
-            "🔍 **Detective** — investigate someone per night *(7+ players)*\n"
+            f"{SEP}\n"
+            f"*Host: **{game.host.display_name}***  ·  **{n}/7** minimum\n\n"
+            "**Role roster unlocks:**\n"
+            "👥 **7+** — 🗡️ Mafia · 💊 Doctor · 🔍 Detective · 🏡 Villagers\n"
+            "👥 **14+** — adds 🛡️ **Bodyguard** *(guards a player; dies in their place)*\n"
+            "👥 **20+** — adds ⚡ **Vigilante** *(one-time night execution; guilt kills if wrong)*\n"
+            f"👥 **Mafia scaling** — 1 per 7 players\n\n"
+            f"**Current roster preview:**\n{preview}\n"
             f"{SEP}"
         ), color=PHANTOM)
-    e.add_field(name=f"👥 Players  ({len(game.players)})",
-                value="\n".join(f"• {m.display_name}" for m in game.players) or "—", inline=False)
-    e.set_footer(text="⚜  Oblivion Empire  ·  Mafia")
+    e.add_field(
+        name=f"👥 Players  ({n})",
+        value="\n".join(f"• {m.display_name}" for m in game.players) or "—",
+        inline=False)
+    e.set_footer(text="⚜  Oblivion Empire  ·  Mafia — click Join!")
     return e
 
 
 class MafiaLobbyView(View):
     def __init__(self, game: MafiaGame):
-        super().__init__(timeout=None); self.game = game
+        super().__init__(timeout=None)
+        self.game = game
 
     @discord.ui.button(label="Join",   style=discord.ButtonStyle.success, emoji="✋")
     async def join_btn(self, i: discord.Interaction, _: Button):
@@ -796,7 +906,7 @@ class MafiaLobbyView(View):
         if i.user in self.game.players:
             await i.response.send_message("❌ Already joined.", ephemeral=True); return
         self.game.players.append(i.user)
-        await i.response.send_message(f"✅ **{i.user.display_name}** joined!")
+        await i.response.send_message(f"✅ **{i.user.display_name}** joined the shadows!")
         if self.game.lobby_msg:
             try: await self.game.lobby_msg.edit(embed=_lobby_embed(self.game), view=self)
             except Exception: pass
@@ -805,16 +915,19 @@ class MafiaLobbyView(View):
     async def start_btn(self, i: discord.Interaction, _: Button):
         if i.user != self.game.host:
             await i.response.send_message("❌ Only the host can start.", ephemeral=True); return
-        if len(self.game.players) < 4:
-            await i.response.send_message("❌ Need at least 4 players.", ephemeral=True); return
-        await i.response.defer(); await _mafia_start(self.game)
+        if len(self.game.players) < 7:
+            await i.response.send_message(
+                f"❌ Need at least **7 players** to start. "
+                f"Currently **{len(self.game.players)}/7**.", ephemeral=True); return
+        await i.response.defer()
+        await _mafia_start(self.game)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger,   emoji="❌")
     async def cancel_btn(self, i: discord.Interaction, _: Button):
         if i.user != self.game.host:
             await i.response.send_message("❌ Only the host can cancel.", ephemeral=True); return
         active_mafia.pop(self.game.channel.id, None)
-        await i.response.send_message(embed=empire_embed("❌  Cancelled", "Mafia game cancelled.", CRIMSON))
+        await i.response.send_message(embed=empire_embed("❌  Cancelled","Mafia game cancelled.", CRIMSON))
         self.stop()
 
 
@@ -822,65 +935,132 @@ async def _mafia_start(game: MafiaGame):
     role_list = assign_roles(len(game.players))
     for member, role in zip(game.players, role_list):
         game.roles[member.id] = role
-    game.alive = list(game.players); game.phase = "starting"
+    game.alive = list(game.players)
+    game.phase = "starting"
 
     dm_fails: list[str] = []
     for member in game.players:
         role      = game.get_role(member)
         role_info = MAFIA_ROLES[role]
+        color = CRIMSON if role == "Mafia" else (
+            0x8b5e00 if role == "Bodyguard" else
+            0x5c3d99 if role == "Vigilante" else
+            TEAL
+        )
         e = discord.Embed(
             title=f"🃏  Your Role  —  {role_info['emoji']} {role}",
-            description=(f"{SEP}\n{role_info['desc']}\n\n**Team:** {role_info['team'].capitalize()}\n{SEP}"),
-            color=CRIMSON if role == "Mafia" else TEAL)
+            description=f"{SEP}\n{role_info['desc']}\n{SEP}",
+            color=color)
+        e.add_field(name="⚔️ Team", value=role_info["team"].capitalize(), inline=True)
         if role == "Mafia":
             team = ", ".join(m.display_name for m in game.players if game.is_mafia(m))
-            e.add_field(name="🗡️ Your Mafia", value=team, inline=False)
+            e.add_field(name="🗡️ Your Allies", value=team or "You're alone…", inline=False)
         e.set_footer(text="⚜  Oblivion Empire  ·  Keep your role secret!")
         try:    await member.send(embed=e)
         except: dm_fails.append(member.display_name)
 
     names = "\n".join(f"• {m.display_name}" for m in game.players)
+    roster = _player_count_preview(len(game.players))
     e = discord.Embed(
         title="🎭  The Game Begins!",
-        description=(f"{SEP}\n*{len(game.players)} players enter the darkness…*\n\n{names}\n\n"
-                     "✉️ Check your **DMs** for your secret role!\n"
-                     + (f"⚠️ DMs failed for: {', '.join(dm_fails)}\n" if dm_fails else "")
-                     + f"{SEP}"),
-        color=PHANTOM)
-    brand(e); await game.channel.send(embed=e)
+        description=(
+            f"{SEP}\n"
+            f"*{len(game.players)} souls enter the darkness…*\n\n"
+            f"{names}\n\n"
+            f"**Tonight's roster:** {roster}\n\n"
+            "✉️ Check your **DMs** for your secret role!"
+            + (f"\n⚠️ DMs failed for: {', '.join(dm_fails)}" if dm_fails else "")
+            + f"\n{SEP}"
+        ), color=PHANTOM)
+    brand(e)
+    await game.channel.send(embed=e)
     await asyncio.sleep(3)
-    # ── Game always starts with Night 1 ──
     await _mafia_night(game)
 
 
-# ── Night phase ────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════
+#  NIGHT PHASE
+# ══════════════════════════════════════════════════════════════════════
 
 class NightActionView(View):
-    def __init__(self, game: MafiaGame, actor_role: str, user_id: int):
+    """
+    Sent via DM — i.guild is None in this context.
+    guild_id is stored so we can resolve members via bot.get_guild().
+    """
+    def __init__(self, game: MafiaGame, actor_role: str, user_id: int, guild_id: int):
         super().__init__(timeout=None)
-        self.game, self.actor_role, self.user_id = game, actor_role, user_id
-        targets = game.alive if actor_role == "Doctor" else game.village_alive()
-        opts    = [discord.SelectOption(label=m.display_name[:100], value=str(m.id))
-                   for m in targets if m.id != user_id]
+        self.game       = game
+        self.actor_role = actor_role
+        self.user_id    = user_id
+        self.guild_id   = guild_id
+
+        # Build target list depending on role
+        if actor_role == "Mafia":
+            candidates = game.village_alive()
+        elif actor_role == "Doctor":
+            candidates = game.alive
+        elif actor_role == "Detective":
+            candidates = game.village_alive()
+        elif actor_role == "Bodyguard":
+            candidates = [m for m in game.alive if m.id != user_id]
+        elif actor_role == "Vigilante":
+            candidates = [m for m in game.alive if m.id != user_id]
+        else:
+            candidates = []
+
+        opts = [discord.SelectOption(label=m.display_name[:100], value=str(m.id))
+                for m in candidates if m.id != user_id]
+
+        # Vigilante can always choose to hold their power
+        if actor_role == "Vigilante" and not game.vigilante_used:
+            opts.insert(0, discord.SelectOption(
+                label="🤝 Hold my power this night",
+                value="0",
+                description="Save the execution for a better moment"))
+
         if not opts: return
-        labels  = {"Mafia": "🗡️ Eliminate…", "Doctor": "💊 Protect…", "Detective": "🔍 Investigate…"}
-        sel     = Select(placeholder=labels.get(actor_role, "Select…"), options=opts)
-        sel.callback = self._on_select; self.add_item(sel)
+
+        placeholders = {
+            "Mafia":      "🗡️  Choose tonight's target…",
+            "Doctor":     "💊  Choose who to protect…",
+            "Detective":  "🔍  Choose who to investigate…",
+            "Bodyguard":  "🛡️  Choose who to guard with your life…",
+            "Vigilante":  "⚡  Use your power or hold it…",
+        }
+        sel = Select(placeholder=placeholders.get(actor_role, "Select…"), options=opts[:25])
+        sel.callback = self._on_select
+        self.add_item(sel)
 
     async def _on_select(self, i: discord.Interaction):
         if i.user.id != self.user_id:
-            await i.response.send_message("❌ Not yours.", ephemeral=True); return
-        tid = int(i.data["values"][0])
+            await i.response.send_message("❌ This isn't your action.", ephemeral=True); return
+
+        raw = i.data["values"][0]
+        tid = int(raw)   # 0 = Vigilante hold, positive = target member ID
+
+        # Resolve guild via stored ID — not i.guild (None in DMs)
+        guild  = bot.get_guild(self.guild_id)
+        target = guild.get_member(tid) if (guild and tid != 0) else None
+
+        # Save action BEFORE responding
         self.game.night_actions[self.actor_role] = tid
-        target = i.guild.get_member(tid)
-        msgs = {
-            "Mafia":     f"🗡️ Target locked: **{target.display_name if target else '?'}**",
-            "Doctor":    f"💊 Protecting **{target.display_name if target else '?'}** tonight.",
-            "Detective": f"🔍 Investigating **{target.display_name if target else '?'}**…",
-        }
-        await i.response.send_message(msgs.get(self.actor_role, "✅ Done."), ephemeral=True)
+
+        if self.actor_role == "Vigilante" and tid == 0:
+            msg = "🤝 Power held. Waiting for a better moment…"
+        else:
+            msgs = {
+                "Mafia":     f"🗡️ Target locked: **{target.display_name if target else '?'}**\n*They won't see it coming.*",
+                "Doctor":    f"💊 Protecting **{target.display_name if target else '?'}** tonight.\n*Stay close.*",
+                "Detective": f"🔍 Investigating **{target.display_name if target else '?'}**…\n*Results at dawn.*",
+                "Bodyguard": f"🛡️ Guarding **{target.display_name if target else '?'}** with your life.\n*You will die for them if needed.*",
+                "Vigilante": f"⚡ Executing **{target.display_name if target else '?'}** tonight.\n*Justice — or guilt — awaits at dawn.*",
+            }
+            msg = msgs.get(self.actor_role, "✅ Action submitted.")
+
+        await i.response.send_message(msg, ephemeral=True)
         self.stop()
-        # ── Auto-dawn if everyone has acted ──
+
+        # Auto-dawn when all special roles have submitted
         if _all_night_done(self.game) and not self.game._dawn_scheduled:
             self.game._dawn_scheduled = True
             asyncio.create_task(_auto_dawn(self.game))
@@ -889,9 +1069,10 @@ class NightActionView(View):
 class NightForceView(View):
     """Fallback — lets host force dawn if someone goes AFK."""
     def __init__(self, game: MafiaGame):
-        super().__init__(timeout=None); self.game = game
+        super().__init__(timeout=None)
+        self.game = game
 
-    @discord.ui.button(label="Force Dawn (AFK fallback)", style=discord.ButtonStyle.secondary, emoji="🌅")
+    @discord.ui.button(label="Force Dawn  (AFK fallback)", style=discord.ButtonStyle.secondary, emoji="🌅")
     async def force_dawn(self, i: discord.Interaction, _: Button):
         if i.user != self.game.host:
             await i.response.send_message("❌ Only the host can force dawn.", ephemeral=True); return
@@ -904,184 +1085,189 @@ class NightForceView(View):
 
 
 async def _auto_dawn(game: MafiaGame):
-    """Called automatically when all night actions are in."""
-    await asyncio.sleep(4)   # small delay so last actor sees their confirmation
+    """Triggered automatically once all night actions are submitted."""
+    await asyncio.sleep(4)
     if game.phase == "night" and game.channel.id in active_mafia:
         await game.channel.send(embed=discord.Embed(
-            title="🌅  All actions submitted — Dawn breaks automatically!",
+            title="🌅  All actions submitted — Dawn breaks!",
             color=GOLD))
         await _mafia_resolve_night(game)
 
 
 async def _mafia_night(game: MafiaGame):
-    game.phase = "night"
-    game.night += 1
+    game.phase           = "night"
+    game.night          += 1
     game._dawn_scheduled = False
-    game.night_actions   = {"Mafia": None, "Doctor": None, "Detective": None}
+    game.night_actions   = {
+        "Mafia": None, "Doctor": None, "Detective": None,
+        "Bodyguard": None, "Vigilante": None,
+    }
     game.transfer_host()
+
+    # Which special roles are alive this night?
+    special_alive = [r for r in ("Mafia","Doctor","Detective","Bodyguard","Vigilante")
+                     if any(game.get_role(m) == r for m in game.alive)]
+    # Vigilante with used power doesn't need to act
+    active_roles = [r for r in special_alive
+                    if not (r == "Vigilante" and game.vigilante_used)]
+
+    role_icons = {"Mafia":"🗡️","Doctor":"💊","Detective":"🔍","Bodyguard":"🛡️","Vigilante":"⚡"}
+    acting_str = "  ".join(f"{role_icons[r]}{r}" for r in active_roles) or "*(no special roles)*"
 
     e = discord.Embed(
         title=f"🌙  Night {game.night}  —  Darkness Falls",
-        description=(f"{SEP}\nSpecial roles — check your **DMs** for your action menu.\n\n"
-                     "Dawn will trigger automatically when all actions are submitted.\n"
-                     f"*(Host can force dawn if someone goes AFK)*\n{SEP}"),
-        color=PHANTOM)
+        description=(
+            f"{SEP}\n"
+            "Special roles — check your **DMs** for your action menu.\n\n"
+            f"**Acting tonight:** {acting_str}\n\n"
+            "Dawn triggers automatically once all actions are submitted.\n"
+            f"*(Host can force dawn if someone goes AFK)*\n"
+            f"{SEP}"
+        ), color=PHANTOM)
     e.set_footer(text=f"⚜  Oblivion Empire  ·  Host: {game.host.display_name}")
-    brand(e); await game.channel.send(embed=e, view=NightForceView(game))
+    brand(e)
+    await game.channel.send(embed=e, view=NightForceView(game))
 
+    guild_id = game.channel.guild.id
     for member in game.alive:
         role = game.get_role(member)
-        if role not in ("Mafia", "Doctor", "Detective"): continue
-        ae = discord.Embed(
-            title=f"🌙  Night {game.night} Action  —  {MAFIA_ROLES[role]['emoji']} {role}",
-            description=f"{SEP}\nUse the dropdown below.\n{SEP}",
-            color=PHANTOM)
-        ae.set_footer(text="⚜  Oblivion Empire  ·  Mafia Night Phase")
-        try:    await member.send(embed=ae, view=NightActionView(game, role, member.id))
-        except: pass
+        if role not in active_roles:
+            continue
+        # Skip Vigilante if they've already used their power
+        if role == "Vigilante" and game.vigilante_used:
+            continue
 
-    # If no special roles are alive at all, auto-dawn immediately
+        ae = discord.Embed(
+            title=f"🌙  Night {game.night}  —  {MAFIA_ROLES[role]['emoji']} {role}",
+            description=f"{SEP}\nUse the menu below to take your action.\n{SEP}",
+            color=PHANTOM)
+        ae.set_footer(text="⚜  Oblivion Empire  ·  Night Phase")
+        try:
+            await member.send(embed=ae, view=NightActionView(game, role, member.id, guild_id))
+        except Exception:
+            pass
+
+    # If no one needs to act, auto-dawn immediately
     if _all_night_done(game) and not game._dawn_scheduled:
         game._dawn_scheduled = True
         asyncio.create_task(_auto_dawn(game))
 
 
 async def _mafia_resolve_night(game: MafiaGame):
-    elim_id   = game.night_actions.get("Mafia")
-    prot_id   = game.night_actions.get("Doctor")
-    invest_id = game.night_actions.get("Detective")
+    """
+    Night resolution order:
+      1. Detective → private DM result
+      2. Vigilante → executes target (or holds); if innocent, dies of guilt
+      3. Doctor    → saves target from Mafia
+      4. Bodyguard → if Mafia targets their ward (and Doctor didn't save), Bodyguard dies instead
+      5. Mafia     → kills target (unless Doctor saved or Bodyguard sacrificed)
+    """
+    guild      = game.channel.guild
+    elim_id    = game.night_actions.get("Mafia")     or 0
+    prot_id    = game.night_actions.get("Doctor")    or 0
+    guard_id   = game.night_actions.get("Bodyguard") or 0
+    invest_id  = game.night_actions.get("Detective") or 0
+    vig_id     = game.night_actions.get("Vigilante") or 0   # 0 = hold, positive = target
 
-    # Detective DM
+    dawn: list[str] = []
+
+    # ── 1. Detective DM (private, doesn't affect dawn board) ──────
     if invest_id:
-        target = game.channel.guild.get_member(invest_id)
+        target = guild.get_member(invest_id)
         det    = next((m for m in game.alive if game.get_role(m) == "Detective"), None)
         if target and det:
             is_maf = game.get_role(target) == "Mafia"
             try:
                 await det.send(embed=discord.Embed(
                     title="🔍  Investigation Result",
-                    description=f"**{target.display_name}** is {'🗡️ **Mafia**' if is_maf else '🏡 **Village**'}!",
+                    description=(
+                        f"Your investigation is complete.\n\n"
+                        f"**{target.display_name}** is "
+                        f"{'🗡️ **Mafia** — they are your enemy.' if is_maf else '🏡 **Village** — they appear innocent.'}"
+                    ),
                     color=CRIMSON if is_maf else EMERALD))
-            except Exception: pass
+            except Exception:
+                pass
 
-    dawn: list[str] = []
-    if elim_id and elim_id != prot_id:
-        victim = game.channel.guild.get_member(elim_id)
-        if victim and victim in game.alive:
-            game.alive.remove(victim)
-            ri = MAFIA_ROLES[game.get_role(victim)]
-            dawn.append(f"💀 **{victim.display_name}** was eliminated overnight.\n"
+    # ── 2. Vigilante execution ─────────────────────────────────────
+    if vig_id and vig_id != 0:
+        game.vigilante_used = True
+        vig_target = guild.get_member(vig_id)
+        if vig_target and vig_target in game.alive:
+            is_mafia_target = game.get_role(vig_target) == "Mafia"
+            game.alive.remove(vig_target)
+            if is_mafia_target:
+                dawn.append(
+                    f"⚡ **Justice was served in the night!**\n"
+                    f"An unknown force eliminated **{vig_target.display_name}**.\n"
+                    f"They were: 🗡️ **Mafia** — a hero walks among you.")
+            else:
+                ri  = MAFIA_ROLES[game.get_role(vig_target)]
+                # Vigilante dies of guilt
+                vig_member = next((m for m in game.alive if game.get_role(m) == "Vigilante"), None)
+                dawn.append(
+                    f"⚡ **A Vigilante struck — and paid the price.**\n"
+                    f"**{vig_target.display_name}** was executed.\n"
+                    f"They were: {ri['emoji']} **{game.get_role(vig_target)}** — innocent.\n"
+                    f"*Consumed by guilt, the Vigilante also fell.*")
+                if vig_member and vig_member in game.alive:
+                    game.alive.remove(vig_member)
+
+    # ── 3–5. Mafia kill, Doctor save, Bodyguard sacrifice ─────────
+    if elim_id:
+        victim = guild.get_member(elim_id)
+
+        if elim_id == prot_id:
+            # Doctor saved the target
+            dawn.append("💊 The Mafia struck — but **someone survived** the night.\n*The Doctor's protection held.*")
+
+        elif elim_id == guard_id:
+            # Bodyguard was protecting the target → sacrifices self
+            guard_member = next((m for m in game.alive if game.get_role(m) == "Bodyguard"), None)
+            if guard_member and guard_member in game.alive:
+                game.alive.remove(guard_member)
+                dawn.append(
+                    f"🛡️ **A guardian fell in the night.**\n"
+                    f"The Mafia targeted **{victim.display_name if victim else '?'}** — "
+                    f"but the **Bodyguard** stepped in front and paid with their life.\n"
+                    f"**{victim.display_name if victim else '?'}** survived.")
+            else:
+                # Bodyguard already dead somehow — target dies normally
+                if victim and victim in game.alive:
+                    game.alive.remove(victim)
+                    ri = MAFIA_ROLES[game.get_role(victim)]
+                    dawn.append(
+                        f"💀 **{victim.display_name}** was eliminated by the Mafia.\n"
                         f"They were: {ri['emoji']} **{game.get_role(victim)}**")
-    elif elim_id and elim_id == prot_id:
-        dawn.append("💊 Someone was targeted but **survived** — the Doctor saved them!")
-    else:
-        dawn.append("😴 A quiet night. Nobody was eliminated.")
 
+        else:
+            # No save, no guard — victim dies
+            if victim and victim in game.alive:
+                game.alive.remove(victim)
+                ri = MAFIA_ROLES[game.get_role(victim)]
+                dawn.append(
+                    f"💀 **{victim.display_name}** was eliminated by the Mafia.\n"
+                    f"They were: {ri['emoji']} **{game.get_role(victim)}**")
+    else:
+        if not any("Vigilante" in line for line in dawn):
+            dawn.append("😴 A quiet night — the Mafia held back. Nobody was eliminated.")
+
+    alive_names = "  ·  ".join(m.display_name for m in game.alive)
     e = discord.Embed(
         title=f"🌅  Dawn  —  Day {game.day + 1} begins",
-        description=f"{SEP}\n" + "\n".join(dawn) + f"\n{SEP}",
-        color=GOLD)
-    brand(e); await game.channel.send(embed=e)
+        description=(
+            f"{SEP}\n"
+            + "\n\n".join(dawn)
+            + f"\n\n**Alive ({len(game.alive)}):** {alive_names}\n"
+            + f"{SEP}"
+        ), color=GOLD)
+    brand(e)
+    await game.channel.send(embed=e)
 
-    if w := game.check_win(): await _mafia_end(game, w); return
+    if w := game.check_win():
+        await _mafia_end(game, w); return
     await asyncio.sleep(2)
     await _mafia_day(game)
-
-
-# ── Day phase ──────────────────────────────────────────────────────────
-
-class DayDiscussionView(View):
-    def __init__(self, game: MafiaGame):
-        super().__init__(timeout=None); self.game = game
-
-    @discord.ui.button(label="📊 Open Voting", style=discord.ButtonStyle.primary, emoji="🗳️")
-    async def open_voting(self, i: discord.Interaction, _: Button):
-        if i.user != self.game.host:
-            await i.response.send_message("❌ Only the host can open voting.", ephemeral=True); return
-        self.stop()
-        names = " · ".join(m.display_name for m in self.game.alive)
-        e = discord.Embed(
-            title=f"🗳️  Day {self.game.day}  —  Voting Open",
-            description=(f"{SEP}\n*{len(self.game.alive)} players alive.*\n\n"
-                         f"**Alive:** {names}\n\n"
-                         "Use the dropdown to vote. Host tallies when ready.\n{SEP}").replace("{SEP}", SEP),
-            color=GOLD)
-        brand(e)
-        await i.response.send_message(embed=e, view=DayVotingView(self.game))
-
-
-class DayVotingView(View):
-    def __init__(self, game: MafiaGame):
-        super().__init__(timeout=None); self.game = game
-        opts = [discord.SelectOption(label=m.display_name[:100], value=str(m.id)) for m in game.alive]
-        sel  = Select(placeholder="🗳️  Vote to eliminate…", options=opts)
-        sel.callback = self._on_vote; self.add_item(sel)
-
-    async def _on_vote(self, i: discord.Interaction):
-        if i.user not in self.game.alive:
-            await i.response.send_message("❌ You are eliminated.", ephemeral=True); return
-        tid = int(i.data["values"][0])
-        if tid == i.user.id:
-            await i.response.send_message("❌ Can't vote yourself.", ephemeral=True); return
-        self.game.votes[i.user.id] = tid
-        target = i.guild.get_member(tid)
-        await i.response.send_message(
-            f"🗳️ Voted for **{target.display_name if target else '?'}**.\n"
-            f"*{len(self.game.votes)}/{len(self.game.alive)} voted.*", ephemeral=True)
-
-    @discord.ui.button(label="⚖️ Tally Votes", style=discord.ButtonStyle.danger, emoji="⚖️", row=1)
-    async def tally_btn(self, i: discord.Interaction, _: Button):
-        if i.user != self.game.host:
-            await i.response.send_message("❌ Only the host can tally.", ephemeral=True); return
-        self.stop(); await i.response.defer()
-        await _mafia_resolve_votes(self.game)
-
-
-async def _mafia_day(game: MafiaGame):
-    game.phase = "day"; game.day += 1; game.votes = {}
-    game.transfer_host()
-    if w := game.check_win(): await _mafia_end(game, w); return
-    names = " · ".join(m.display_name for m in game.alive)
-    e = discord.Embed(
-        title=f"☀️  Day {game.day}  —  Discussion",
-        description=(f"{SEP}\n*{len(game.alive)} players remain.*\n\n"
-                     f"**Alive:** {names}\n\nDiscuss freely. Host opens voting when ready.\n{SEP}"),
-        color=GOLD)
-    e.set_footer(text=f"⚜  Oblivion Empire  ·  Host: {game.host.display_name}")
-    brand(e); await game.channel.send(embed=e, view=DayDiscussionView(game))
-
-
-async def _mafia_resolve_votes(game: MafiaGame):
-    if not game.votes:
-        await game.channel.send(embed=empire_embed(
-            "🗳️  No Votes Cast", "Nobody voted. Night begins…", VIOLET))
-    else:
-        tally: dict[int, int] = {}
-        for tid in game.votes.values(): tally[tid] = tally.get(tid, 0) + 1
-        max_v   = max(tally.values())
-        leaders = [tid for tid, v in tally.items() if v == max_v]
-        if len(leaders) > 1:
-            tied = ", ".join(
-                (g.display_name if (g := game.channel.guild.get_member(tid)) else "?")
-                for tid in leaders)
-            await game.channel.send(embed=empire_embed(
-                "⚖️  Tie!", f"**{tied}** tied with **{max_v}** votes. Nobody eliminated.", VIOLET))
-        else:
-            elim = game.channel.guild.get_member(leaders[0])
-            if elim and elim in game.alive:
-                game.alive.remove(elim)
-                ri = MAFIA_ROLES[game.get_role(elim)]
-                await game.channel.send(embed=discord.Embed(
-                    title="⚖️  Eliminated!",
-                    description=(f"**{elim.display_name}** was voted out.\n"
-                                 f"They were: {ri['emoji']} **{game.get_role(elim)}**"),
-                    color=CRIMSON))
-
-    if w := game.check_win(): await _mafia_end(game, w); return
-    # ── Night begins automatically after tally ──
-    await asyncio.sleep(2)
-    await _mafia_night(game)
-
 
 async def _mafia_end(game: MafiaGame, winner: str):
     game.phase = "ended"; active_mafia.pop(game.channel.id, None)
@@ -1214,7 +1400,7 @@ class GamesCog(commands.Cog):
                            f"*{len(HOK_QUOTES)} heroes · works immediately*"),
                     inline=False)
         e.add_field(name="🎭 Mafia",
-                    value="Social deduction — 4+ players.\nStarts with Night 1 · auto-advances on actions.",
+                    value="Social deduction — **7+ players** required.\nNight → Day → Vote → Night → repeat.\nAuto-advances · host controls pacing.",
                     inline=False)
         e.add_field(name="🏅 All-Time Scores", value="Combined leaderboard.", inline=False)
         e.set_footer(text="⚜  Oblivion Empire  ·  Games Panel", icon_url=logo_url() or discord.utils.MISSING)
@@ -1267,5 +1453,8 @@ class GamesCog(commands.Cog):
 
 
 async def setup(bot_instance: commands.Bot):
+    # NOTE: do NOT call tree.sync() here.
+    # setup() runs before bot.start() so the HTTP client isn't connected yet.
+    # Syncing happens in on_ready() once the bot is fully connected.
     bot_instance.tree.remove_command("games")
     await bot_instance.add_cog(GamesCog(bot_instance))
