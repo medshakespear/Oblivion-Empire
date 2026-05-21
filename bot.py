@@ -7,10 +7,9 @@
 #    DISCORD_TOKEN   — your bot token
 #    ADMIN_ROLE_IDS  — comma-separated role IDs  e.g. "111,222"
 #    DATA_DIR        — /data  (Railway persistent volume)
-#    SERVER_LOGO_URL — (optional) direct image URL to your server logo
-#                      used as thumbnail in all embeds
-#                      e.g. https://cdn.discordapp.com/icons/...
-#                      if blank, falls back to the bot's own avatar
+#  SERVER LOGO:
+#    Just add  logo.png  to the root of your GitHub repo and push.
+#    Railway already knows which repo it is — no configuration needed.
 #
 #  HOW TO ADD HERO IMAGES:
 #    /set_hero_image → pick hero → attach image file
@@ -41,9 +40,20 @@ ADMIN_ROLE_IDS: list[int] = [
 DATA_DIR        = os.getenv("DATA_DIR", "/data")
 DATA_FILE       = os.path.join(DATA_DIR, "oblivion_data.json")
 HERO_IMAGES_DIR = os.path.join(DATA_DIR, "hero_images")
-SERVER_LOGO_URL = os.getenv("SERVER_LOGO_URL", "")  # your server logo URL
 os.makedirs(DATA_DIR,        exist_ok=True)
 os.makedirs(HERO_IMAGES_DIR, exist_ok=True)
+
+# ─── SERVER LOGO ──────────────────────────────────────────────────────
+# Just add  logo.png  to the root of your GitHub repo and push.
+# Railway automatically provides the repo details — nothing else needed.
+_GH_OWNER  = os.getenv("RAILWAY_GIT_REPO_OWNER", "")
+_GH_REPO   = os.getenv("RAILWAY_GIT_REPO_NAME",  "")
+_GH_BRANCH = os.getenv("RAILWAY_GIT_BRANCH",     "main")
+
+_LOGO_URL = (
+    f"https://raw.githubusercontent.com/{_GH_OWNER}/{_GH_REPO}/{_GH_BRANCH}/logo.png"
+    if _GH_OWNER and _GH_REPO else ""
+)
 
 LOG_CHANNEL_NAME = "oblivion-logs"
 
@@ -109,11 +119,13 @@ def sub_tier_index(sub: str) -> int:
     return order.index(sub) if sub in order else 0
 
 def rank_sort_key(md: dict) -> tuple[int,int]:
-    peak = md.get("peak_rank","")
-    main = peak.split()[0] if peak else ""
-    tier = HOK_RANK_ORDER.get(main,-1)
-    if main == "Grandmaster": return (tier, md.get("peak_stars",0))
-    sub = peak.split()[-1] if " " in peak else "I"
+    """Sort by current rank tier first, then peak_points as tiebreaker."""
+    cur  = md.get("current_rank","")
+    main = cur.split()[0] if cur else ""
+    tier = HOK_RANK_ORDER.get(main, -1)
+    if main == "Grandmaster":
+        return (tier, md.get("current_stars", 0))
+    sub = cur.split()[-1] if " " in cur else "I"
     return (tier, sub_tier_index(sub))
 
 # ══════════════════════════════════════════════════════════════════════
@@ -126,6 +138,7 @@ def _blank_db() -> dict:
         "game_scores": {},
         "hero_images": {},
         "config":      {"admin_role_ids": ADMIN_ROLE_IDS},
+        # legacy migration: peak_rank/peak_stars are no longer used — peak_points only
     }
 
 def load_db() -> dict:
@@ -151,7 +164,7 @@ def new_member(discord_id: int) -> dict:
     return {
         "discord_id":discord_id,"ign":"",
         "current_rank":"","current_stars":0,
-        "peak_rank":"","peak_stars":0,
+        "peak_points":0,
         "main_lane":"","hero_class":"","region":"",
         "registered_at":now,"updated_at":now,
     }
@@ -162,9 +175,9 @@ db = load_db()
 #  BRANDING HELPERS
 # ══════════════════════════════════════════════════════════════════════
 def logo_url() -> str:
-    """Server logo if set, else bot avatar."""
-    if SERVER_LOGO_URL:
-        return SERVER_LOGO_URL
+    """Logo from GitHub repo if configured, else bot avatar."""
+    if _LOGO_URL:
+        return _LOGO_URL
     return bot.user.display_avatar.url if bot.user else ""
 
 def bot_avatar() -> Optional[str]:
@@ -297,14 +310,9 @@ class RankTierView(View):
             await i.response.send_message("❌ Not your setup.", ephemeral=True); return
         tier = i.data["values"][0]
         if tier == "Grandmaster":
-            if self.purpose == "current":
-                await i.response.edit_message(
-                    embed=_step_embed(5,7,[f"Current Rank: 👑 Grandmaster"],"Select your **peak rank tier**:"),
-                    view=RankTierView(self.user_id, self.lane, self.cls, self.existing,
-                                      "peak", current_rank="Grandmaster", progress=5))
-            else:
-                await i.response.send_modal(
-                    ProfileFinalModal(self.lane, self.cls, self.current_rank, self.current_stars, "Grandmaster", 0, self.existing))
+            # Peak rank is now just a points number — send straight to final modal
+            await i.response.send_modal(
+                ProfileFinalModal(self.lane, self.cls, "Grandmaster", 0, self.existing))
         else:
             next_step = self.progress + 1
             label_type = "current" if self.purpose=="current" else "peak"
@@ -330,74 +338,98 @@ class RankSubTierView(View):
             await i.response.send_message("❌ Not your setup.", ephemeral=True); return
         sub  = i.data["values"][0]
         rank = f"{self.tier} {sub}"
-        if self.purpose == "current":
-            await i.response.edit_message(
-                embed=_step_embed(5,7,[f"Current Rank: {format_rank(rank)}"],"Select your **peak / highest rank tier**:"),
-                view=RankTierView(self.user_id, self.lane, self.cls, self.existing,
-                                  "peak", current_rank=rank, progress=5))
-        else:
-            await i.response.send_modal(
-                ProfileFinalModal(self.lane, self.cls, self.current_rank, self.current_stars, rank, 0, self.existing))
+        # Peak rank is now just a points number — no tier dropdown needed
+        # Send straight to final modal once current rank sub-tier is picked
+        await i.response.send_modal(
+            ProfileFinalModal(self.lane, self.cls, rank, self.current_stars, self.existing))
 
 class ProfileFinalModal(Modal):
-    def __init__(self, lane, cls, curr_rank, curr_stars_pre, peak_rank, peak_stars_pre, existing):
-        super().__init__(title="⚜  Profile — Final Step (7/7)")
-        self.lane, self.cls, self.curr_rank, self.peak_rank = lane, cls, curr_rank, peak_rank
+    """
+    Final step — IGN, GM stars (if Grandmaster), Peak Points, Region.
+
+    Peak Points = a raw number that lives independently of rank tier.
+    It is NOT a rank — it's just however many points the player has reached
+    at their peak (e.g. 109 or 1500). Stored in md["peak_points"].
+    """
+    def __init__(self, lane: str, cls: str, curr_rank: str,
+                 curr_stars_pre: int, existing: Optional[dict]):
+        super().__init__(title="⚜  Profile — Final Step")
+        self.lane, self.cls, self.curr_rank = lane, cls, curr_rank
+
         self._ign = TextInput(label="In-Game Name (IGN)",
                               placeholder="Your HoK username exactly as shown in-game",
                               required=True, max_length=50,
-                              default=existing.get("ign","") if existing else "")
+                              default=existing.get("ign", "") if existing else "")
         self.add_item(self._ign)
+
+        # Only ask for GM stars when current rank is Grandmaster
         self._curr_stars: Optional[TextInput] = None
         if curr_rank == "Grandmaster":
-            self._curr_stars = TextInput(label="Current GM star count",
-                                          placeholder="0+=King · 25+=Mythic · 50+=Epic · 100+=Legend",
-                                          required=True, max_length=5,
-                                          default=str(curr_stars_pre) if curr_stars_pre else "")
+            self._curr_stars = TextInput(
+                label="Grandmaster star count",
+                placeholder="0–24 = King · 25–49 = Mythic · 50–99 = Epic · 100+ = Legend",
+                required=True, max_length=5,
+                default=str(curr_stars_pre) if curr_stars_pre else "")
             self.add_item(self._curr_stars)
-        self._peak_stars: Optional[TextInput] = None
-        if peak_rank == "Grandmaster":
-            self._peak_stars = TextInput(label="Peak GM star count",
-                                          placeholder="0+=King · 25+=Mythic · 50+=Epic · 100+=Legend",
-                                          required=True, max_length=5,
-                                          default=str(peak_stars_pre) if peak_stars_pre else "")
-            self.add_item(self._peak_stars)
+
+        # Peak points — always shown, always just a number
+        self._peak_points = TextInput(
+            label="Peak Points",
+            placeholder="Your highest points ever reached  (e.g. 109 or 1500)",
+            required=False, max_length=6,
+            default=str(existing.get("peak_points", "")) if existing and existing.get("peak_points") else "")
+        self.add_item(self._peak_points)
+
         self._region = TextInput(label="Region (optional)",
                                   placeholder="e.g. SEA, EU, NA, ME, East Asia",
                                   required=False, max_length=20,
-                                  default=existing.get("region","") if existing else "")
+                                  default=existing.get("region", "") if existing else "")
         self.add_item(self._region)
 
     async def on_submit(self, i: discord.Interaction):
         uid = str(i.user.id)
         md  = db["members"].get(uid) or new_member(i.user.id)
-        def to_int(ti): return int(ti.value.strip()) if ti and ti.value.strip().isdigit() else 0
-        curr_stars = to_int(self._curr_stars)
-        peak_stars = to_int(self._peak_stars)
-        md.update({"ign":self._ign.value.strip(),"current_rank":self.curr_rank,
-                   "current_stars":curr_stars,"peak_rank":self.peak_rank,"peak_stars":peak_stars,
-                   "main_lane":self.lane,"hero_class":self.cls,
-                   "region":self._region.value.strip(),"updated_at":datetime.utcnow().isoformat()})
+
+        def to_int(ti: Optional[TextInput]) -> int:
+            if ti is None: return 0
+            v = (ti.value or "").strip()
+            return int(v) if v.isdigit() else 0
+
+        curr_stars  = to_int(self._curr_stars)
+        peak_points = to_int(self._peak_points)
+
+        md.update({
+            "ign":           self._ign.value.strip(),
+            "current_rank":  self.curr_rank,
+            "current_stars": curr_stars,
+            "peak_points":   peak_points,
+            "main_lane":     self.lane,
+            "hero_class":    self.cls,
+            "region":        self._region.value.strip(),
+            "updated_at":    datetime.utcnow().isoformat(),
+        })
+        # Clean out old schema fields if present
+        md.pop("peak_rank",  None)
+        md.pop("peak_stars", None)
         db["members"][uid] = md; save_db(db)
-        le,ce = HOK_LANE_EMOJIS.get(self.lane,"🎮"), HOK_CLASS_EMOJIS.get(self.cls,"🎮")
+
+        le, ce = HOK_LANE_EMOJIS.get(self.lane, "🎮"), HOK_CLASS_EMOJIS.get(self.cls, "🎮")
+        peak_str = f"`{peak_points:,} pts`" if peak_points else "—"
         e = discord.Embed(
             title="✅  Profile Saved!",
-            description=(
-                f"{SEP}\n"
-                f"**{md['ign']}** — your warrior profile is live.\n"
-                f"{SEP}"
-            ), color=EMERALD,
-        )
-        e.add_field(name="🎮 IGN",        value=f"`{md['ign']}`",                              inline=True)
-        e.add_field(name=f"{le} Lane",    value=self.lane,                                     inline=True)
-        e.add_field(name=f"{ce} Class",   value=self.cls,                                      inline=True)
-        e.add_field(name="📊 Current",    value=format_rank(self.curr_rank, curr_stars),       inline=True)
-        e.add_field(name="🏆 Peak",       value=format_rank(self.peak_rank, peak_stars),       inline=True)
-        if md.get("region"): e.add_field(name="🌐 Region", value=md["region"], inline=True)
+            description=f"{SEP}\n**{md['ign']}** — your warrior profile is live.\n{SEP}",
+            color=EMERALD)
+        e.add_field(name="🎮 IGN",         value=f"`{md['ign']}`",                        inline=True)
+        e.add_field(name=f"{le} Lane",     value=self.lane,                               inline=True)
+        e.add_field(name=f"{ce} Class",    value=self.cls,                                inline=True)
+        e.add_field(name="📊 Current Rank",value=format_rank(self.curr_rank, curr_stars), inline=True)
+        e.add_field(name="🏆 Peak Points", value=peak_str,                                inline=True)
+        if md.get("region"): e.add_field(name="🌐 Region", value=md["region"],            inline=True)
         brand(e, thumb=False)
         await i.response.send_message(embed=e, ephemeral=True)
-        await log_action(i.guild,"📝 Profile Updated",
-            f"{i.user.mention} — **{md['ign']}** | {format_rank(self.curr_rank,curr_stars)} | Peak: {format_rank(self.peak_rank,peak_stars)}")
+        await log_action(i.guild, "📝 Profile Updated",
+            f"{i.user.mention} — **{md['ign']}** | "
+            f"{format_rank(self.curr_rank, curr_stars)} | Peak: {peak_str}")
 
 # ══════════════════════════════════════════════════════════════════════
 #  EMBED BUILDERS
@@ -431,7 +463,7 @@ def build_profile_embed(member: discord.Member) -> discord.Embed:
     e.set_thumbnail(url=member.display_avatar.url)
     e.add_field(name="🎮 IGN",          value=f"`{md['ign']}`",                                         inline=True)
     e.add_field(name="📊 Current Rank", value=format_rank(md.get("current_rank",""), md.get("current_stars",0)), inline=True)
-    e.add_field(name="🏆 Peak Rank",    value=format_rank(md.get("peak_rank",""),    md.get("peak_stars",0)),    inline=True)
+    e.add_field(name="🏆 Peak Points",  value=f"`{md.get('peak_points',0):,} pts`" if md.get("peak_points") else "—", inline=True)
     e.add_field(name=f"{le} Lane",      value=md.get("main_lane","—"),                                  inline=True)
     e.add_field(name=f"{ce} Class",     value=md.get("hero_class","—"),                                 inline=True)
     e.add_field(name="🌐 Region",        value=md.get("region","—") or "—",                             inline=True)
@@ -453,7 +485,8 @@ def build_leaderboard_embed(members_list, guild, title, subtitle=""):
     for i, md in enumerate(members_list[:15], 1):
         mem  = guild.get_member(md["discord_id"])
         name = mem.display_name if mem else f"ID:{md['discord_id']}"
-        pr   = format_rank(md.get("peak_rank","?"), md.get("peak_stars",0))
+        pp   = md.get("peak_points", 0)
+        pr   = f"`{pp:,} pts`" if pp else "—"
         le   = HOK_LANE_EMOJIS.get(md.get("main_lane",""), "")
         pos  = medals[i-1] if i <= 3 else f"`{i}.`"
         lines.append(f"{pos}  {le} **{name}**\n　　{pr}")
@@ -759,7 +792,7 @@ class OblivionPanelView(View):
     @discord.ui.button(label="Setup Profile",   emoji="⚙️", style=discord.ButtonStyle.success,   row=0)
     async def setup_profile(self, i, _):
         await i.response.send_message(
-            embed=_step_embed(1,7,[],"Select your **main lane** in Honor of Kings:"),
+            embed=_step_embed(1,5,[],"Select your **main lane** in Honor of Kings:"),
             view=SetupLaneView(i.user.id), ephemeral=True)
 
     @discord.ui.button(label="Search Profile",  emoji="🔍", style=discord.ButtonStyle.secondary, row=0)
@@ -1167,7 +1200,7 @@ async def on_ready():
     await bot.tree.sync()
     print(f"✅  {bot.user}  —  Oblivion Empire Bot online!")
     print(f"🛡  Admin IDs : {ADMIN_ROLE_IDS or 'none — set ADMIN_ROLE_IDS env var'}")
-    print(f"🖼️  Logo URL  : {SERVER_LOGO_URL or 'not set — using bot avatar'}")
+    print(f"🖼️  Logo URL  : {_LOGO_URL or 'not set — edit GITHUB_USER and GITHUB_REPO in bot.py'}")
     print(f"💾  Data      : {DATA_FILE}")
 
 async def main():
