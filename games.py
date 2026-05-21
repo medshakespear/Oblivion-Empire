@@ -873,4 +873,3 @@ class GamesCog(commands.Cog):
 async def setup(bot_instance: commands.Bot):
     bot_instance.tree.remove_command("games")
     await bot_instance.add_cog(GamesCog(bot_instance))
-    await bot_instance.tree.sync()
