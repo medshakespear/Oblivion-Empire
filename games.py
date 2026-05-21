@@ -1,30 +1,6 @@
 # ══════════════════════════════════════════════════════════════════════
 #  games.py  —  Oblivion Empire Games Cog
 # ══════════════════════════════════════════════════════════════════════
-#
-#  GUESS BY PICTURE — ZOOM SYSTEM:
-#    When a round starts the bot randomly crops the hero image.
-#    The crop size depends on difficulty:
-#      🟢 Easy   — 55–75% of image visible (recognisable)
-#      🟡 Medium — 25–55% visible (tricky)
-#      🔴 Hard   — 6–25% visible (very hard)
-#      🎲 Random — random difficulty every round
-#    The crop is taken from a random position in the image,
-#    then resized to 512×512 and sent as a file attachment.
-#    Requires Pillow — listed in requirements.txt.
-#
-#  ADDING IMAGES:
-#    /set_hero_image in Discord → pick hero → attach image file
-#    Multiple images per hero are supported — picked randomly each round.
-#
-#  MAFIA — HOST-CONTROLLED:
-#    No timers. Host decides when each phase advances:
-#      Day discussion → host clicks "Open Voting" when ready
-#      Voting         → host clicks "Tally Votes" when ready
-#      Night          → host clicks "Dawn" after night actions
-#    If host is eliminated another player takes control.
-#
-# ══════════════════════════════════════════════════════════════════════
 
 import discord
 from discord.ext import commands
@@ -35,142 +11,136 @@ from typing import Optional
 
 from PIL import Image
 
-from bot import db, save_db, brand, log_action, bot_avatar, _all_hero_names, HERO_IMAGES_DIR
-
-EMPIRE_GOLD   = 0xc9a227
-EMPIRE_RED    = 0x8b1a1a
-EMPIRE_PURPLE = 0x5c0099
-EMPIRE_GREEN  = 0x2ecc71
-EMPIRE_CYAN   = 0x00b4d8
+from bot import (db, save_db, brand, empire_embed, logo_url, log_action,
+                 bot_avatar, _all_hero_names, HERO_IMAGES_DIR,
+                 GOLD, CRIMSON, VIOLET, TEAL, EMERALD, STEEL, AMBER,
+                 PHANTOM, OBSIDIAN, SEP, SEP2)
 
 # ══════════════════════════════════════════════════════════════════════
-#  COMPLETE HOK HERO ROSTER
-#  Add new heroes at the bottom — the bot picks them up automatically.
+#  COMPLETE HOK HERO ROSTER  — add new heroes at the bottom
 # ══════════════════════════════════════════════════════════════════════
 
 HOK_HEROES: dict[str, dict] = {
-    # ── Clash Lane  (Tanks & Fighters — top lane) ──────────────────
-    "Lian Po":           {"class": "Tank",     "lane": "Clash Lane"},
-    "Arthur":            {"class": "Tank",     "lane": "Clash Lane"},
-    "Dun":               {"class": "Tank",     "lane": "Clash Lane"},
-    "Augran":            {"class": "Tank",     "lane": "Clash Lane"},
-    "Kaizer":            {"class": "Fighter",  "lane": "Clash Lane"},
-    "Dolia":             {"class": "Tank",     "lane": "Clash Lane"},
-    "Sun Ce":            {"class": "Tank",     "lane": "Clash Lane"},
-    "Allain":            {"class": "Fighter",  "lane": "Clash Lane"},
-    "Biron":             {"class": "Fighter",  "lane": "Clash Lane"},
-    "Charlotte":         {"class": "Fighter",  "lane": "Clash Lane"},
-    "Mayene":            {"class": "Fighter",  "lane": "Clash Lane"},
-    "Li Xin":            {"class": "Fighter",  "lane": "Clash Lane"},
-    "Bai Qi":            {"class": "Fighter",  "lane": "Clash Lane"},
-    "Xiang Yu":          {"class": "Fighter",  "lane": "Clash Lane"},
-    "Loong":             {"class": "Fighter",  "lane": "Clash Lane"},
-    "Liu Bei":           {"class": "Fighter",  "lane": "Clash Lane"},
-    "Guan Yu":           {"class": "Fighter",  "lane": "Clash Lane"},
-    "Mulan":             {"class": "Fighter",  "lane": "Clash Lane"},
-    "Zilong":            {"class": "Fighter",  "lane": "Clash Lane"},
-    "Yang Jian":         {"class": "Fighter",  "lane": "Clash Lane"},
-    "Dian Wei":          {"class": "Fighter",  "lane": "Clash Lane"},
-    "Yixing":            {"class": "Fighter",  "lane": "Clash Lane"},
-    "Lu Bu":             {"class": "Fighter",  "lane": "Clash Lane"},
-    "Musashi":           {"class": "Fighter",  "lane": "Clash Lane"},
-    "Agudo":             {"class": "Fighter",  "lane": "Clash Lane"},
-    "Athena":            {"class": "Tank",     "lane": "Clash Lane"},
-    "Wuyan":             {"class": "Fighter",  "lane": "Clash Lane"},
-    "Nezha":             {"class": "Fighter",  "lane": "Clash Lane"},
-    "Fatih":             {"class": "Fighter",  "lane": "Clash Lane"},
-    # ── Jungle  (Assassins & Fighters) ────────────────────────────
-    "Lam":               {"class": "Assassin", "lane": "Jungle"},
-    "Prince of Lanling": {"class": "Assassin", "lane": "Jungle"},
-    "Han Xin":           {"class": "Assassin", "lane": "Jungle"},
-    "Jing":              {"class": "Assassin", "lane": "Jungle"},
-    "Li Bai":            {"class": "Assassin", "lane": "Jungle"},
-    "Cao Cao":           {"class": "Assassin", "lane": "Jungle"},
-    "Milady":            {"class": "Assassin", "lane": "Jungle"},
-    "Consort Yu":        {"class": "Assassin", "lane": "Jungle"},
-    "Shangguan":         {"class": "Assassin", "lane": "Jungle"},
-    "Ying":              {"class": "Assassin", "lane": "Jungle"},
-    "Wukong":            {"class": "Fighter",  "lane": "Jungle"},
-    "Menki":             {"class": "Fighter",  "lane": "Jungle"},
-    "Gao":               {"class": "Assassin", "lane": "Jungle"},
-    "Gan & Mo":          {"class": "Assassin", "lane": "Jungle"},
-    "Ukyo Tachibana":    {"class": "Assassin", "lane": "Jungle"},
-    "Butterfly":         {"class": "Assassin", "lane": "Jungle"},
-    "Zhou Yu":           {"class": "Assassin", "lane": "Jungle"},
-    "Feyd":              {"class": "Assassin", "lane": "Jungle"},
-    # ── Mid Lane  (Mages) ──────────────────────────────────────────
-    "Diaochan":          {"class": "Mage",     "lane": "Mid Lane"},
-    "Angela":            {"class": "Mage",     "lane": "Mid Lane"},
-    "Kongming":          {"class": "Mage",     "lane": "Mid Lane"},
-    "Mi Yue":            {"class": "Mage",     "lane": "Mid Lane"},
-    "Mai Shiranui":      {"class": "Mage",     "lane": "Mid Lane"},
-    "Princess Frost":    {"class": "Mage",     "lane": "Mid Lane"},
-    "Liang":             {"class": "Mage",     "lane": "Mid Lane"},
-    "Sima Yi":           {"class": "Mage",     "lane": "Mid Lane"},
-    "Lady Zhen":         {"class": "Mage",     "lane": "Mid Lane"},
-    "Shouyue":           {"class": "Mage",     "lane": "Mid Lane"},
-    "Donghuang":         {"class": "Mage",     "lane": "Mid Lane"},
-    "Ming":              {"class": "Mage",     "lane": "Mid Lane"},
-    "Ziya":              {"class": "Mage",     "lane": "Mid Lane"},
-    "Yao":               {"class": "Mage",     "lane": "Mid Lane"},
-    "Shi":               {"class": "Mage",     "lane": "Mid Lane"},
-    "Heino":             {"class": "Mage",     "lane": "Mid Lane"},
-    "Di Renjie":         {"class": "Mage",     "lane": "Mid Lane"},
-    "Kui":               {"class": "Mage",     "lane": "Mid Lane"},
-    "Xuance":            {"class": "Mage",     "lane": "Mid Lane"},
-    "Cirrus":            {"class": "Mage",     "lane": "Mid Lane"},
-    "Dharma":            {"class": "Mage",     "lane": "Mid Lane"},
-    "Nu Wa":             {"class": "Mage",     "lane": "Mid Lane"},
-    "Guiguzi":           {"class": "Mage",     "lane": "Mid Lane"},
-    "Daji":              {"class": "Mage",     "lane": "Mid Lane"},
-    "Meng Ya":           {"class": "Mage",     "lane": "Mid Lane"},
-    # ── Farm Lane  (Marksmen — bot lane) ──────────────────────────
-    "Marco Polo":        {"class": "Marksman", "lane": "Farm Lane"},
-    "Hou Yi":            {"class": "Marksman", "lane": "Farm Lane"},
-    "Luban No. 7":       {"class": "Marksman", "lane": "Farm Lane"},
-    "Huang Zhong":       {"class": "Marksman", "lane": "Farm Lane"},
-    "Mozi":              {"class": "Marksman", "lane": "Farm Lane"},
-    "Nakoruru":          {"class": "Marksman", "lane": "Farm Lane"},
-    "Arli":              {"class": "Marksman", "lane": "Farm Lane"},
-    "Luara":             {"class": "Marksman", "lane": "Farm Lane"},
-    "Fang":              {"class": "Marksman", "lane": "Farm Lane"},
-    "Alessio":           {"class": "Marksman", "lane": "Farm Lane"},
-    "Erin":              {"class": "Marksman", "lane": "Farm Lane"},
-    "Garo":              {"class": "Marksman", "lane": "Farm Lane"},
-    "Arke":              {"class": "Marksman", "lane": "Farm Lane"},
-    "Chano":             {"class": "Marksman", "lane": "Farm Lane"},
-    "Chi Cha":           {"class": "Marksman", "lane": "Farm Lane"},
-    "Yuhuan":            {"class": "Marksman", "lane": "Farm Lane"},
-    # ── Roaming  (Supports & Tanks) ───────────────────────────────
-    "Da Qiao":           {"class": "Support",  "lane": "Roaming"},
-    "Lady Sun":          {"class": "Support",  "lane": "Roaming"},
-    "Yaria":             {"class": "Support",  "lane": "Roaming"},
-    "Zhuangzi":          {"class": "Support",  "lane": "Roaming"},
-    "Sun Bin":           {"class": "Support",  "lane": "Roaming"},
-    "Liu Shan":          {"class": "Support",  "lane": "Roaming"},
-    "Angela":            {"class": "Support",  "lane": "Roaming"},
-    "Xiao Qiao":         {"class": "Support",  "lane": "Roaming"},
-    "Cai Yan":           {"class": "Support",  "lane": "Roaming"},
-    "Fuzi":              {"class": "Support",  "lane": "Roaming"},
-    "Pei":               {"class": "Tank",     "lane": "Roaming"},
-    "Zhang Fei":         {"class": "Tank",     "lane": "Roaming"},
-    "Ata":               {"class": "Support",  "lane": "Roaming"},
-    "Luna":              {"class": "Support",  "lane": "Roaming"},
-    "Garuda":            {"class": "Support",  "lane": "Roaming"},
-    "Sakeer":            {"class": "Support",  "lane": "Roaming"},
-    "Haya":              {"class": "Support",  "lane": "Roaming"},
-    "DaYu":              {"class": "Support",  "lane": "Roaming"},
-    "Dr Bian":           {"class": "Support",  "lane": "Roaming"},
+    # ── Clash Lane ─────────────────────────────────────────────────
+    "Lian Po":           {"class":"Tank",    "lane":"Clash Lane"},
+    "Arthur":            {"class":"Tank",    "lane":"Clash Lane"},
+    "Dun":               {"class":"Tank",    "lane":"Clash Lane"},
+    "Augran":            {"class":"Tank",    "lane":"Clash Lane"},
+    "Kaizer":            {"class":"Fighter", "lane":"Clash Lane"},
+    "Dolia":             {"class":"Tank",    "lane":"Clash Lane"},
+    "Sun Ce":            {"class":"Tank",    "lane":"Clash Lane"},
+    "Allain":            {"class":"Fighter", "lane":"Clash Lane"},
+    "Biron":             {"class":"Fighter", "lane":"Clash Lane"},
+    "Charlotte":         {"class":"Fighter", "lane":"Clash Lane"},
+    "Mayene":            {"class":"Fighter", "lane":"Clash Lane"},
+    "Li Xin":            {"class":"Fighter", "lane":"Clash Lane"},
+    "Bai Qi":            {"class":"Fighter", "lane":"Clash Lane"},
+    "Xiang Yu":          {"class":"Fighter", "lane":"Clash Lane"},
+    "Loong":             {"class":"Fighter", "lane":"Clash Lane"},
+    "Liu Bei":           {"class":"Fighter", "lane":"Clash Lane"},
+    "Guan Yu":           {"class":"Fighter", "lane":"Clash Lane"},
+    "Mulan":             {"class":"Fighter", "lane":"Clash Lane"},
+    "Zilong":            {"class":"Fighter", "lane":"Clash Lane"},
+    "Yang Jian":         {"class":"Fighter", "lane":"Clash Lane"},
+    "Dian Wei":          {"class":"Fighter", "lane":"Clash Lane"},
+    "Yixing":            {"class":"Fighter", "lane":"Clash Lane"},
+    "Lu Bu":             {"class":"Fighter", "lane":"Clash Lane"},
+    "Musashi":           {"class":"Fighter", "lane":"Clash Lane"},
+    "Agudo":             {"class":"Fighter", "lane":"Clash Lane"},
+    "Athena":            {"class":"Tank",    "lane":"Clash Lane"},
+    "Wuyan":             {"class":"Fighter", "lane":"Clash Lane"},
+    "Nezha":             {"class":"Fighter", "lane":"Clash Lane"},
+    "Fatih":             {"class":"Fighter", "lane":"Clash Lane"},
+    # ── Jungle ─────────────────────────────────────────────────────
+    "Lam":               {"class":"Assassin","lane":"Jungle"},
+    "Prince of Lanling": {"class":"Assassin","lane":"Jungle"},
+    "Han Xin":           {"class":"Assassin","lane":"Jungle"},
+    "Jing":              {"class":"Assassin","lane":"Jungle"},
+    "Li Bai":            {"class":"Assassin","lane":"Jungle"},
+    "Cao Cao":           {"class":"Assassin","lane":"Jungle"},
+    "Milady":            {"class":"Assassin","lane":"Jungle"},
+    "Consort Yu":        {"class":"Assassin","lane":"Jungle"},
+    "Shangguan":         {"class":"Assassin","lane":"Jungle"},
+    "Ying":              {"class":"Assassin","lane":"Jungle"},
+    "Wukong":            {"class":"Fighter", "lane":"Jungle"},
+    "Menki":             {"class":"Fighter", "lane":"Jungle"},
+    "Gao":               {"class":"Assassin","lane":"Jungle"},
+    "Gan & Mo":          {"class":"Assassin","lane":"Jungle"},
+    "Ukyo Tachibana":    {"class":"Assassin","lane":"Jungle"},
+    "Butterfly":         {"class":"Assassin","lane":"Jungle"},
+    "Zhou Yu":           {"class":"Assassin","lane":"Jungle"},
+    "Feyd":              {"class":"Assassin","lane":"Jungle"},
+    # ── Mid Lane ───────────────────────────────────────────────────
+    "Diaochan":          {"class":"Mage",    "lane":"Mid Lane"},
+    "Angela":            {"class":"Mage",    "lane":"Mid Lane"},
+    "Kongming":          {"class":"Mage",    "lane":"Mid Lane"},
+    "Mi Yue":            {"class":"Mage",    "lane":"Mid Lane"},
+    "Mai Shiranui":      {"class":"Mage",    "lane":"Mid Lane"},
+    "Princess Frost":    {"class":"Mage",    "lane":"Mid Lane"},
+    "Liang":             {"class":"Mage",    "lane":"Mid Lane"},
+    "Sima Yi":           {"class":"Mage",    "lane":"Mid Lane"},
+    "Lady Zhen":         {"class":"Mage",    "lane":"Mid Lane"},
+    "Shouyue":           {"class":"Mage",    "lane":"Mid Lane"},
+    "Donghuang":         {"class":"Mage",    "lane":"Mid Lane"},
+    "Ming":              {"class":"Mage",    "lane":"Mid Lane"},
+    "Ziya":              {"class":"Mage",    "lane":"Mid Lane"},
+    "Yao":               {"class":"Mage",    "lane":"Mid Lane"},
+    "Shi":               {"class":"Mage",    "lane":"Mid Lane"},
+    "Heino":             {"class":"Mage",    "lane":"Mid Lane"},
+    "Di Renjie":         {"class":"Mage",    "lane":"Mid Lane"},
+    "Kui":               {"class":"Mage",    "lane":"Mid Lane"},
+    "Xuance":            {"class":"Mage",    "lane":"Mid Lane"},
+    "Cirrus":            {"class":"Mage",    "lane":"Mid Lane"},
+    "Dharma":            {"class":"Mage",    "lane":"Mid Lane"},
+    "Nu Wa":             {"class":"Mage",    "lane":"Mid Lane"},
+    "Guiguzi":           {"class":"Mage",    "lane":"Mid Lane"},
+    "Daji":              {"class":"Mage",    "lane":"Mid Lane"},
+    "Meng Ya":           {"class":"Mage",    "lane":"Mid Lane"},
+    # ── Farm Lane ──────────────────────────────────────────────────
+    "Marco Polo":        {"class":"Marksman","lane":"Farm Lane"},
+    "Hou Yi":            {"class":"Marksman","lane":"Farm Lane"},
+    "Luban No. 7":       {"class":"Marksman","lane":"Farm Lane"},
+    "Huang Zhong":       {"class":"Marksman","lane":"Farm Lane"},
+    "Mozi":              {"class":"Marksman","lane":"Farm Lane"},
+    "Nakoruru":          {"class":"Marksman","lane":"Farm Lane"},
+    "Arli":              {"class":"Marksman","lane":"Farm Lane"},
+    "Luara":             {"class":"Marksman","lane":"Farm Lane"},
+    "Fang":              {"class":"Marksman","lane":"Farm Lane"},
+    "Alessio":           {"class":"Marksman","lane":"Farm Lane"},
+    "Erin":              {"class":"Marksman","lane":"Farm Lane"},
+    "Garo":              {"class":"Marksman","lane":"Farm Lane"},
+    "Arke":              {"class":"Marksman","lane":"Farm Lane"},
+    "Chano":             {"class":"Marksman","lane":"Farm Lane"},
+    "Chi Cha":           {"class":"Marksman","lane":"Farm Lane"},
+    "Yuhuan":            {"class":"Marksman","lane":"Farm Lane"},
+    # ── Roaming ────────────────────────────────────────────────────
+    "Da Qiao":           {"class":"Support", "lane":"Roaming"},
+    "Lady Sun":          {"class":"Support", "lane":"Roaming"},
+    "Yaria":             {"class":"Support", "lane":"Roaming"},
+    "Zhuangzi":          {"class":"Support", "lane":"Roaming"},
+    "Sun Bin":           {"class":"Support", "lane":"Roaming"},
+    "Liu Shan":          {"class":"Support", "lane":"Roaming"},
+    "Xiao Qiao":         {"class":"Support", "lane":"Roaming"},
+    "Cai Yan":           {"class":"Support", "lane":"Roaming"},
+    "Fuzi":              {"class":"Support", "lane":"Roaming"},
+    "Pei":               {"class":"Tank",    "lane":"Roaming"},
+    "Zhang Fei":         {"class":"Tank",    "lane":"Roaming"},
+    "Ata":               {"class":"Support", "lane":"Roaming"},
+    "Luna":              {"class":"Support", "lane":"Roaming"},
+    "Garuda":            {"class":"Support", "lane":"Roaming"},
+    "Sakeer":            {"class":"Support", "lane":"Roaming"},
+    "Haya":              {"class":"Support", "lane":"Roaming"},
+    "DaYu":              {"class":"Support", "lane":"Roaming"},
+    "Dr Bian":           {"class":"Support", "lane":"Roaming"},
     # ── Add new heroes below ───────────────────────────────────────
     # "Hero Name": {"class": "CLASS", "lane": "LANE"},
 }
 
 # ══════════════════════════════════════════════════════════════════════
-#  HERO QUOTES  (Guess by Quote game — bot shows these, players guess)
+#  HERO QUOTES  (Guess by Quote game)
 # ══════════════════════════════════════════════════════════════════════
 
 HOK_QUOTES: dict[str, str] = {
-    # Clash Lane
     "Lian Po":           "I have broken armies with my body alone. You are no different.",
     "Arthur":            "A knight's strength means nothing without the honour that guides it.",
     "Dun":               "I gave my eye for loyalty. I would give the other without hesitation.",
@@ -200,7 +170,6 @@ HOK_QUOTES: dict[str, str] = {
     "Wuyan":             "They call me ugly. I call it armor against distraction.",
     "Nezha":             "I burn bright enough for everyone — and I do not care who gets scorched.",
     "Fatih":             "Conquest is not a destination. It is a way of life.",
-    # Jungle
     "Lam":               "The way of the blade has no shortcuts.",
     "Prince of Lanling": "Behind this mask is the last face you will ever see.",
     "Han Xin":           "Strike from where they least expect. That is the only rule I follow.",
@@ -219,7 +188,6 @@ HOK_QUOTES: dict[str, str] = {
     "Butterfly":         "I flutter between worlds. You will never pin me down.",
     "Zhou Yu":           "Music and war — both require perfect timing.",
     "Feyd":              "Power is not taken. It is simply… remembered.",
-    # Mid Lane
     "Diaochan":          "Every man who looks upon me sees only what he wishes to see.",
     "Angela":            "Love is the most powerful force in the universe. Believe me.",
     "Kongming":          "The battle is won long before the first blade is ever drawn.",
@@ -245,7 +213,6 @@ HOK_QUOTES: dict[str, str] = {
     "Guiguzi":           "The greatest battles are fought in the mind, not on the field.",
     "Daji":              "They call it a curse. I call it a gift.",
     "Meng Ya":           "I dream of a world without war. Until then, I fight.",
-    # Farm Lane
     "Marco Polo":        "Every map has an edge — I have yet to find mine.",
     "Hou Yi":            "I once shot nine suns from the sky. You are but one more target.",
     "Luban No. 7":       "Model seven, online. All systems… exceeding expectations.",
@@ -262,7 +229,6 @@ HOK_QUOTES: dict[str, str] = {
     "Chano":             "I carry the hopes of my tribe on every arrow I fire.",
     "Chi Cha":           "Quick and deadly. That is all you need to know about me.",
     "Yuhuan":            "Beauty is the most devastating weapon ever crafted.",
-    # Roaming
     "Da Qiao":           "A gentle hand can still turn the tide of war.",
     "Lady Sun":          "Do not mistake my smile for weakness.",
     "Yaria":             "The spirits answer when I call.",
@@ -284,108 +250,52 @@ HOK_QUOTES: dict[str, str] = {
 }
 
 # ══════════════════════════════════════════════════════════════════════
-#  HERO ALIASES  (shortcuts players can type and still get credit)
+#  HERO ALIASES  —  shortcuts players can type
 # ══════════════════════════════════════════════════════════════════════
 
 HERO_ALIASES: dict[str, str] = {
-    # Gan & Mo (global name)
-    "gan jiang and mo ye": "Gan & Mo",
-    "gan jiang mo ye":     "Gan & Mo",
-    "gan mo":              "Gan & Mo",
-    "ganmo":               "Gan & Mo",
-    "gan":                 "Gan & Mo",
-    # Luban No. 7
-    "luban":               "Luban No. 7",
-    "luban7":              "Luban No. 7",
-    "lu ban":              "Luban No. 7",
-    "luban no 7":          "Luban No. 7",
-    # Prince of Lanling
-    "lanling":             "Prince of Lanling",
-    "prince lanling":      "Prince of Lanling",
-    # Kongming = Zhuge Liang (global name)
-    "zhuge liang":         "Kongming",
-    "zhuge":               "Kongming",
-    # Dr Bian = Bian Que
-    "bian que":            "Dr Bian",
-    "bian":                "Dr Bian",
-    # Shangguan = Shangguan Wan er
-    "shangguan waner":     "Shangguan",
-    "wan er":              "Shangguan",
-    "waner":               "Shangguan",
-    # Common shortcuts
-    "marco":               "Marco Polo",
-    "consort":             "Consort Yu",
-    "nuwa":                "Nu Wa",
-    "nu wu":               "Nu Wa",
-    "monkey":              "Wukong",
-    "monkey king":         "Wukong",
-    "sun wukong":          "Wukong",
-    "lianpo":              "Lian Po",
-    "zhangfei":            "Zhang Fei",
-    "guanyu":              "Guan Yu",
-    "libai":               "Li Bai",
-    "caocao":              "Cao Cao",
-    "liubei":              "Liu Bei",
-    "baiqi":               "Bai Qi",
-    "xiangyu":             "Xiang Yu",
-    "hanxin":              "Han Xin",
-    "diaochan":            "Diaochan",
-    "direnjie":            "Di Renjie",
-    "huangzhong":          "Huang Zhong",
-    "ladysun":             "Lady Sun",
-    "caiyan":              "Cai Yan",
-    "sunbin":              "Sun Bin",
-    "liushan":             "Liu Shan",
-    "sunce":               "Sun Ce",
-    "yangjian":            "Yang Jian",
-    "dianwei":             "Dian Wei",
-    "daqiao":              "Da Qiao",
-    "da qiao":             "Da Qiao",
-    "xiaoqiao":            "Xiao Qiao",
-    "xiao qiao":           "Xiao Qiao",
-    "ukyo":                "Ukyo Tachibana",
-    "frost":               "Princess Frost",
-    "princessfrost":       "Princess Frost",
-    "zhuangzi":            "Zhuangzi",
-    "mai":                 "Mai Shiranui",
-    "zhou yu":             "Zhou Yu",
-    "zhouyu":              "Zhou Yu",
-    "simayi":              "Sima Yi",
-    "ladyzhen":            "Lady Zhen",
-    "lady zhen":           "Lady Zhen",
-    "miye":                "Mi Yue",
-    "mi yue":              "Mi Yue",
-    "arke":                "Arke",
-    "feyd":                "Feyd",
-    "daji":                "Daji",
-    "yaria":               "Yaria",
-    "nakoruru":            "Nakoruru",
-    "mozi":                "Mozi",
-    "loong":               "Loong",
-    "lam":                 "Lam",
-    "luara":               "Luara",
-    "arli":                "Arli",
-    "chano":               "Chano",
-    "garo":                "Garo",
-    "butterfly":           "Butterfly",
-    "garuda":              "Garuda",
-    "dayu":                "DaYu",
-    "haya":                "Haya",
-    "sakeer":              "Sakeer",
-    "angela":              "Angela",
-    "augran":              "Augran",
-    "kaizer":              "Kaizer",
+    "gan jiang and mo ye":"Gan & Mo", "gan jiang mo ye":"Gan & Mo",
+    "gan mo":"Gan & Mo", "ganmo":"Gan & Mo", "gan":"Gan & Mo",
+    "luban":"Luban No. 7", "luban7":"Luban No. 7",
+    "lu ban":"Luban No. 7", "luban no 7":"Luban No. 7",
+    "lanling":"Prince of Lanling", "prince lanling":"Prince of Lanling",
+    "zhuge liang":"Kongming", "zhuge":"Kongming",
+    "bian que":"Dr Bian", "bian":"Dr Bian",
+    "shangguan waner":"Shangguan", "wan er":"Shangguan", "waner":"Shangguan",
+    "marco":"Marco Polo",
+    "consort":"Consort Yu",
+    "nuwa":"Nu Wa", "nu wu":"Nu Wa",
+    "monkey":"Wukong", "monkey king":"Wukong", "sun wukong":"Wukong",
+    "lianpo":"Lian Po", "zhangfei":"Zhang Fei", "guanyu":"Guan Yu",
+    "libai":"Li Bai", "caocao":"Cao Cao", "liubei":"Liu Bei",
+    "baiqi":"Bai Qi", "xiangyu":"Xiang Yu", "hanxin":"Han Xin",
+    "diaochan":"Diaochan", "direnjie":"Di Renjie", "huangzhong":"Huang Zhong",
+    "ladysun":"Lady Sun", "caiyan":"Cai Yan", "sunbin":"Sun Bin",
+    "liushan":"Liu Shan", "sunce":"Sun Ce", "yangjian":"Yang Jian",
+    "dianwei":"Dian Wei", "daqiao":"Da Qiao", "da qiao":"Da Qiao",
+    "xiaoqiao":"Xiao Qiao", "xiao qiao":"Xiao Qiao",
+    "ukyo":"Ukyo Tachibana",
+    "frost":"Princess Frost", "princessfrost":"Princess Frost",
+    "zhuangzi":"Zhuangzi", "mai":"Mai Shiranui",
+    "zhou yu":"Zhou Yu", "zhouyu":"Zhou Yu",
+    "simayi":"Sima Yi", "ladyzhen":"Lady Zhen", "lady zhen":"Lady Zhen",
+    "miye":"Mi Yue", "mi yue":"Mi Yue",
+    "arke":"Arke", "feyd":"Feyd", "daji":"Daji", "yaria":"Yaria",
+    "nakoruru":"Nakoruru", "mozi":"Mozi", "loong":"Loong", "lam":"Lam",
+    "luara":"Luara", "arli":"Arli", "chano":"Chano", "garo":"Garo",
+    "butterfly":"Butterfly", "garuda":"Garuda", "dayu":"DaYu",
+    "haya":"Haya", "sakeer":"Sakeer", "angela":"Angela",
+    "augran":"Augran", "kaizer":"Kaizer",
 }
 
-# ─── Answer checker ───────────────────────────────────────────────────
+# ─── Answer checker ────────────────────────────────────────────────────
 
 def _norm(text: str) -> str:
     text = text.strip().lower()
     text = unicodedata.normalize("NFD", text)
     text = "".join(c for c in text if not unicodedata.combining(c))
-    text = re.sub(r"[^a-z0-9 &']", "", text)
+    text = re.sub(r"[^a-z0-9 &]", "", text)
     return re.sub(r"\s+", " ", text).strip()
-
 
 def check_guess(answer: str, correct_hero: str) -> bool:
     a   = _norm(answer)
@@ -394,80 +304,51 @@ def check_guess(answer: str, correct_hero: str) -> bool:
     for k, v in HERO_ALIASES.items():
         if v == correct_hero and a == _norm(k): return True
     if a == cor: return True
-    if a.replace(" ", "") == cor.replace(" ", ""): return True
+    if a.replace(" ","") == cor.replace(" ",""): return True
     if len(a) >= 4 and cor.startswith(a): return True
     return False
 
 # ══════════════════════════════════════════════════════════════════════
 #  IMAGE ZOOM PROCESSOR
-#
-#  Loads a hero image from the local Railway volume,
-#  crops a random region based on difficulty, resizes to 512×512.
-#  Returns a discord.File ready to send.
-#
-#  Difficulty → fraction of image shown (smaller = harder):
-#    easy:   55–75%
-#    medium: 25–55%
-#    hard:    6–25%
 # ══════════════════════════════════════════════════════════════════════
 
-ZOOM_RANGES: dict[str, tuple[float, float]] = {
+ZOOM_RANGES: dict[str, tuple[float,float]] = {
     "easy":   (0.55, 0.75),
     "medium": (0.25, 0.55),
     "hard":   (0.06, 0.25),
 }
-
 DIFFICULTY_LABELS = {
-    "easy":   "🟢 Easy",
-    "medium": "🟡 Medium",
-    "hard":   "🔴 Hard",
-    "random": "🎲 Random",
+    "easy":"🟢 Easy", "medium":"🟡 Medium",
+    "hard":"🔴 Hard", "random":"🎲 Random",
 }
 
-
-def _zoom_image_sync(filepath: str, difficulty: str) -> Optional[bytes]:
-    """
-    Synchronous Pillow processing — run in a thread via asyncio.to_thread().
-    Returns PNG bytes or None on failure.
-    """
+def _zoom_sync(filepath: str, difficulty: str) -> Optional[bytes]:
     try:
         img = Image.open(filepath).convert("RGB")
         w, h = img.size
-
-        actual_diff = difficulty if difficulty != "random" else random.choice(["easy","medium","hard"])
-        min_f, max_f = ZOOM_RANGES.get(actual_diff, (0.25, 0.75))
+        actual = difficulty if difficulty != "random" else random.choice(["easy","medium","hard"])
+        min_f, max_f = ZOOM_RANGES.get(actual,(0.25,0.75))
         frac  = random.uniform(min_f, max_f)
-
-        crop_w = max(int(w * frac), 32)
-        crop_h = max(int(h * frac), 32)
-        x = random.randint(0, max(w - crop_w, 0))
-        y = random.randint(0, max(h - crop_h, 0))
-
-        cropped = img.crop((x, y, x + crop_w, y + crop_h))
-        resized = cropped.resize((512, 512), Image.LANCZOS)
-
-        buf = io.BytesIO()
-        resized.save(buf, format="PNG")
+        cw    = max(int(w*frac), 32)
+        ch    = max(int(h*frac), 32)
+        x     = random.randint(0, max(w-cw, 0))
+        y     = random.randint(0, max(h-ch, 0))
+        buf   = io.BytesIO()
+        img.crop((x,y,x+cw,y+ch)).resize((512,512),Image.LANCZOS).save(buf,format="PNG")
         return buf.getvalue()
     except Exception:
         return None
 
-
-async def zoom_hero_image(filepath: str, difficulty: str) -> Optional[discord.File]:
-    """Returns a discord.File with the cropped image, or None if processing fails."""
-    if not os.path.exists(filepath):
-        return None
-    data = await asyncio.to_thread(_zoom_image_sync, filepath, difficulty)
-    if data is None:
-        return None
+async def zoom_image(filepath: str, difficulty: str) -> Optional[discord.File]:
+    if not os.path.exists(filepath): return None
+    data = await asyncio.to_thread(_zoom_sync, filepath, difficulty)
+    if data is None: return None
     return discord.File(io.BytesIO(data), filename="hero_clue.png")
 
-
-def get_random_hero_image(hero: str) -> Optional[str]:
-    """Return a random local image path for a hero, or None."""
-    images = db.get("hero_images", {}).get(hero, [])
+def pick_image(hero: str) -> Optional[str]:
+    images = db.get("hero_images",{}).get(hero,[])
     if isinstance(images, str): images = [images] if images else []
-    valid = [p for p in images if os.path.exists(p)]
+    valid  = [p for p in images if os.path.exists(p)]
     return random.choice(valid) if valid else None
 
 # ══════════════════════════════════════════════════════════════════════
@@ -478,7 +359,6 @@ active_picture: dict[int, dict]        = {}
 active_quote:   dict[int, dict]        = {}
 active_mafia:   dict[int, "MafiaGame"] = {}
 
-
 def channel_busy(cid: int) -> Optional[str]:
     if cid in active_picture: return "Guess by Picture"
     if cid in active_quote:   return "Guess by Quote"
@@ -486,52 +366,51 @@ def channel_busy(cid: int) -> Optional[str]:
     return None
 
 # ══════════════════════════════════════════════════════════════════════
-#  GAME 1 — GUESS BY PICTURE  (with difficulty + zoom)
+#  GAME 1 — GUESS BY PICTURE
 # ══════════════════════════════════════════════════════════════════════
 
-class DifficultySelectView(View):
-    """Host picks difficulty before the game starts."""
+class DifficultyView(View):
     def __init__(self, channel_id: int, host_id: int):
         super().__init__(timeout=120)
         self.channel_id, self.host_id = channel_id, host_id
 
-    async def _start(self, interaction: discord.Interaction, difficulty: str):
-        if interaction.user.id != self.host_id:
-            await interaction.response.send_message("❌ Only the host can pick difficulty.", ephemeral=True); return
-        images   = db.get("hero_images", {})
+    async def _start(self, i: discord.Interaction, diff: str):
+        if i.user.id != self.host_id:
+            await i.response.send_message("❌ Only the host can pick difficulty.", ephemeral=True); return
+        images   = db.get("hero_images",{})
         hero_cnt = sum(1 for h in images if images[h])
         active_picture[self.channel_id] = {
-            "host_id":    self.host_id,
-            "difficulty": difficulty,
-            "hero":       None,
-            "used":       [],
-            "scores":     {},
-            "revealed":   True,
+            "host_id":i.host_id if hasattr(i,"host_id") else self.host_id,
+            "difficulty":diff,"hero":None,"used":[],"scores":{},"revealed":True,
         }
-        label = DIFFICULTY_LABELS.get(difficulty, difficulty)
+        # store host_id properly
+        active_picture[self.channel_id]["host_id"] = self.host_id
+        label = DIFFICULTY_LABELS.get(diff, diff)
         e = discord.Embed(
-            title=f"🖼️ Guess by Picture — {label}",
-            description=(f"*Hosted by **{interaction.user.display_name}***\n\n"
-                         "A cropped hero image will appear.\n"
-                         "**Type the hero's name in this channel** to win a point!\n\n"
-                         f"🎮 **{hero_cnt}** heroes in the pool · Difficulty: **{label}**"),
-            color=EMPIRE_GOLD)
+            title=f"🖼️  Guess by Picture  —  {label}",
+            description=(
+                f"{SEP}\n"
+                f"*Hosted by **{i.user.display_name}***\n\n"
+                f"A **cropped** hero image will appear.\n"
+                "**Type the hero's name in this channel** to win a point!\n\n"
+                f"🎮 **{hero_cnt}** heroes in the pool\n"
+                f"Difficulty: **{label}**\n"
+                f"{SEP}"
+            ), color=AMBER,
+        )
         brand(e)
-        await interaction.response.edit_message(embed=e, view=None)
+        await i.response.edit_message(embed=e, view=None)
         await asyncio.sleep(2)
-        await _picture_round(interaction.channel, self.channel_id)
+        await _picture_round(i.channel, self.channel_id)
 
     @discord.ui.button(label="Easy",   style=discord.ButtonStyle.success,   emoji="🟢", row=0)
-    async def easy(self, i, _):   await self._start(i, "easy")
-
+    async def easy(self, i, _):   await self._start(i,"easy")
     @discord.ui.button(label="Medium", style=discord.ButtonStyle.primary,   emoji="🟡", row=0)
-    async def medium(self, i, _): await self._start(i, "medium")
-
+    async def medium(self, i, _): await self._start(i,"medium")
     @discord.ui.button(label="Hard",   style=discord.ButtonStyle.danger,    emoji="🔴", row=0)
-    async def hard(self, i, _):   await self._start(i, "hard")
-
+    async def hard(self, i, _):   await self._start(i,"hard")
     @discord.ui.button(label="Random", style=discord.ButtonStyle.secondary, emoji="🎲", row=0)
-    async def random_diff(self, i, _): await self._start(i, "random")
+    async def rnd(self, i, _):    await self._start(i,"random")
 
 
 class PictureRoundView(View):
@@ -539,86 +418,81 @@ class PictureRoundView(View):
         super().__init__(timeout=None)
         self.channel_id, self.host_id = channel_id, host_id
 
-    @discord.ui.button(label="Reveal & Skip", style=discord.ButtonStyle.secondary, emoji="⏭️")
-    async def skip_btn(self, interaction: discord.Interaction, _: Button):
+    @discord.ui.button(label="Skip", style=discord.ButtonStyle.secondary, emoji="⏭️")
+    async def skip_btn(self, i: discord.Interaction, _: Button):
         game = active_picture.get(self.channel_id)
         if not game or game.get("revealed"):
-            await interaction.response.send_message("No active round.", ephemeral=True); return
+            await i.response.send_message("No active round.", ephemeral=True); return
         game["revealed"] = True
         hero = game["hero"]
-        info = HOK_HEROES.get(hero, {})
-        await interaction.response.send_message(embed=discord.Embed(
-            title="⏭️ Skipped!",
-            description=f"The hero was **{hero}**\n{info.get('class','?')} · {info.get('lane','?')}",
-            color=EMPIRE_PURPLE))
-        await _picture_next(interaction.channel, self.channel_id)
+        info = HOK_HEROES.get(hero,{})
+        await i.response.send_message(embed=discord.Embed(
+            title="⏭️  Skipped!",
+            description=f"The hero was **{hero}**\n*{info.get('class','?')} · {info.get('lane','?')}*",
+            color=VIOLET))
+        await _picture_next(i.channel, self.channel_id)
 
     @discord.ui.button(label="End Game", style=discord.ButtonStyle.danger, emoji="🛑")
-    async def end_btn(self, interaction: discord.Interaction, _: Button):
-        if interaction.user.id != self.host_id:
-            await interaction.response.send_message("❌ Only the host can end the game.", ephemeral=True); return
+    async def end_btn(self, i: discord.Interaction, _: Button):
+        if i.user.id != self.host_id:
+            await i.response.send_message("❌ Only the host can end the game.", ephemeral=True); return
         game = active_picture.get(self.channel_id)
         if game: game["revealed"] = True
-        await _picture_end(interaction.channel, self.channel_id)
-        await interaction.response.send_message("🛑 Game ended.", ephemeral=True)
+        await _picture_end(i.channel, self.channel_id)
+        await i.response.send_message("🛑 Game ended.", ephemeral=True)
 
 
 async def _picture_round(channel: discord.TextChannel, channel_id: int):
     game = active_picture.get(channel_id)
     if not game: return
-
-    images = db.get("hero_images", {})
-    used   = game.get("used", [])
+    images = db.get("hero_images",{})
+    used   = game.get("used",[])
     pool   = [h for h in images if images[h] and h not in used]
-
     if not pool:
-        msg = ("Every hero with images has been shown. Game over!" if used
-               else "No hero images found.\nUse `/set_hero_image` to add images.")
-        await channel.send(embed=discord.Embed(
-            title="✅ All Heroes Done!" if used else "⚠️ No Images",
-            description=msg, color=EMPIRE_GOLD if used else EMPIRE_RED))
+        msg = ("Every hero with images has been shown. Well played!" if used
+               else "No hero images found.\nUse `/set_hero_image` to add some!")
+        await channel.send(embed=empire_embed(
+            "✅  All Heroes Shown!" if used else "⚠️  No Images",
+            msg, GOLD if used else CRIMSON))
         await _picture_end(channel, channel_id); return
 
-    hero       = random.choice(pool)
-    filepath   = get_random_hero_image(hero)
+    hero     = random.choice(pool)
+    filepath = pick_image(hero)
     if not filepath:
-        # image path missing — skip this hero
         game["used"].append(hero)
         await _picture_round(channel, channel_id); return
 
-    difficulty = game["difficulty"]
-    if difficulty == "random":
-        actual_diff = random.choice(["easy","medium","hard"])
-    else:
-        actual_diff = difficulty
+    difficulty  = game["difficulty"]
+    actual_diff = difficulty if difficulty != "random" else random.choice(["easy","medium","hard"])
+    file        = await zoom_image(filepath, actual_diff)
 
-    file = await zoom_hero_image(filepath, actual_diff)
-
-    game.update({"hero": hero, "revealed": False})
+    game.update({"hero":hero,"revealed":False})
     game["used"].append(hero)
 
-    info      = HOK_HEROES.get(hero, {})
-    round_num = len(game["used"])
+    info       = HOK_HEROES.get(hero,{})
+    round_num  = len(game["used"])
     diff_label = DIFFICULTY_LABELS.get(actual_diff, actual_diff)
-    total     = len(pool) + len(used)
+    total      = len(pool) + len(used)
 
     e = discord.Embed(
-        title=f"🖼️ Guess by Picture — Round {round_num}/{total}",
+        title=f"🖼️  Guess by Picture  —  Round {round_num}/{total}",
         description=(
-            f"*Which Honor of Kings hero is this?*\n\n"
+            f"{SEP}\n"
+            "*Which Honor of Kings hero is this?*\n\n"
             "**Type the hero's name in this channel.**\n"
             f"First correct answer wins a point!\n\n"
-            f"Difficulty: **{diff_label}**  |  {info.get('class','?')} · {info.get('lane','?')}"
-        ), color=EMPIRE_GOLD)
-
+            f"Difficulty: **{diff_label}**\n"
+            f"{SEP}"
+        ), color=AMBER,
+    )
     if file:
         e.set_image(url="attachment://hero_clue.png")
-        e.set_footer(text="⚜ Oblivion Empire | Guess by Picture")
+        e.set_footer(text=f"⚜  Oblivion Empire  ·  {info.get('class','?')} · {info.get('lane','?')}",
+                     icon_url=logo_url() or discord.utils.MISSING)
         await channel.send(embed=e, file=file, view=PictureRoundView(channel_id, game["host_id"]))
     else:
-        # Pillow failed — send unmodified embed note
-        e.description += "\n\n*(Image processing failed — hero skipped)*"
         game["revealed"] = True
+        e.description += "\n\n*(Image error — hero skipped)*"
         await channel.send(embed=e)
         await asyncio.sleep(2)
         await _picture_next(channel, channel_id)
@@ -629,78 +503,97 @@ async def _picture_next(channel, channel_id):
     await asyncio.sleep(3)
     await _picture_round(channel, channel_id)
 
-
 async def _picture_end(channel, channel_id):
     game = active_picture.pop(channel_id, None)
     if not game: return
-    scores = game.get("scores", {})
+    scores = game.get("scores",{})
     e = discord.Embed(
-        title="🏁 Guess by Picture — Game Over!",
-        description=f"*{len(game.get('used',[]))} heroes shown.*",
-        color=EMPIRE_GOLD)
-    _add_score_field(e, scores, channel.guild)
-    _persist_scores(scores)
-    brand(e)
-    await channel.send(embed=e)
+        title="🏁  Guess by Picture  —  Game Over!",
+        description=f"{SEP}\n*{len(game.get('used',[]))} heroes were shown.*\n{SEP}",
+        color=GOLD,
+    )
+    _add_scores(e, scores, channel.guild)
+    _save_scores(scores)
+    brand(e); await channel.send(embed=e)
 
 # ══════════════════════════════════════════════════════════════════════
 #  GAME 2 — GUESS BY QUOTE
+#
+#  BUG FIX: The quote game now uses a dedicated channel_id-keyed
+#  state dict.  The on_message handler processes picture game first
+#  then quote game independently — no early return blocks the second.
+#  Rounds are tracked via game["round_msg_id"] to avoid stale buttons.
 # ══════════════════════════════════════════════════════════════════════
 
 class QuoteRoundView(View):
-    def __init__(self, channel_id: int, host_id: int):
+    def __init__(self, channel_id: int, host_id: int, round_id: str):
         super().__init__(timeout=None)
-        self.channel_id, self.host_id = channel_id, host_id
+        self.channel_id = channel_id
+        self.host_id    = host_id
+        self.round_id   = round_id  # unique per round, prevents stale buttons acting
 
-    @discord.ui.button(label="Reveal & Skip", style=discord.ButtonStyle.secondary, emoji="⏭️")
-    async def skip_btn(self, interaction: discord.Interaction, _: Button):
+    @discord.ui.button(label="Skip", style=discord.ButtonStyle.secondary, emoji="⏭️")
+    async def skip_btn(self, i: discord.Interaction, _: Button):
         game = active_quote.get(self.channel_id)
-        if not game or game.get("revealed"):
-            await interaction.response.send_message("No active round.", ephemeral=True); return
+        # Only act if this button belongs to the current active round
+        if not game or game.get("revealed") or game.get("round_id") != self.round_id:
+            await i.response.send_message("No active round.", ephemeral=True); return
         game["revealed"] = True
         hero = game["hero"]
-        info = HOK_HEROES.get(hero, {})
-        await interaction.response.send_message(embed=discord.Embed(
-            title="⏭️ Skipped!",
-            description=f"That was **{hero}**\n{info.get('class','?')} · {info.get('lane','?')}",
-            color=EMPIRE_PURPLE))
-        await _quote_next(interaction.channel, self.channel_id)
+        info = HOK_HEROES.get(hero,{})
+        await i.response.send_message(embed=discord.Embed(
+            title="⏭️  Skipped!",
+            description=f"That was **{hero}**\n*{info.get('class','?')} · {info.get('lane','?')}*",
+            color=VIOLET))
+        await _quote_next(i.channel, self.channel_id)
 
     @discord.ui.button(label="End Game", style=discord.ButtonStyle.danger, emoji="🛑")
-    async def end_btn(self, interaction: discord.Interaction, _: Button):
-        if interaction.user.id != self.host_id:
-            await interaction.response.send_message("❌ Only the host can end the game.", ephemeral=True); return
+    async def end_btn(self, i: discord.Interaction, _: Button):
+        if i.user.id != self.host_id:
+            await i.response.send_message("❌ Only the host can end the game.", ephemeral=True); return
         game = active_quote.get(self.channel_id)
         if game: game["revealed"] = True
-        await _quote_end(interaction.channel, self.channel_id)
-        await interaction.response.send_message("🛑 Game ended.", ephemeral=True)
+        await _quote_end(i.channel, self.channel_id)
+        await i.response.send_message("🛑 Game ended.", ephemeral=True)
 
 
-async def _quote_round(channel, channel_id):
+async def _quote_round(channel: discord.TextChannel, channel_id: int):
     game = active_quote.get(channel_id)
     if not game: return
+
     used = game.get("used", [])
     pool = [h for h in HOK_QUOTES if h not in used]
+
     if not pool:
-        await channel.send(embed=discord.Embed(
-            title="✅ All Quotes Used!",
-            description="Every hero has spoken. Game over!", color=EMPIRE_GOLD))
+        await channel.send(embed=empire_embed(
+            "✅  All Quotes Used!", "Every hero has spoken. Game over!", GOLD))
         await _quote_end(channel, channel_id); return
-    hero  = random.choice(pool)
-    quote = HOK_QUOTES[hero]
-    info  = HOK_HEROES.get(hero, {})
-    game.update({"hero": hero, "revealed": False})
+
+    hero      = random.choice(pool)
+    quote     = HOK_QUOTES[hero]
+    info      = HOK_HEROES.get(hero,{})
+    round_id  = str(random.randint(100000, 999999))  # unique per round
+
+    game.update({"hero": hero, "revealed": False, "round_id": round_id})
     game["used"].append(hero)
-    round_num = len(game["used"]); total = len(HOK_QUOTES)
+
+    round_num = len(game["used"])
+    total     = len(HOK_QUOTES)
+
     e = discord.Embed(
-        title=f"💬 Guess by Quote — Round {round_num}/{total}",
-        description=(f"*Which Honor of Kings hero said this?*\n\n"
-                     f"**❝ {quote} ❞**\n\n"
-                     "Type the hero's name in this channel.\n"
-                     "First correct answer wins a point!"),
-        color=EMPIRE_CYAN)
-    e.set_footer(text=f"⚜ Oblivion Empire | {info.get('class','?')} · {info.get('lane','?')}")
-    await channel.send(embed=e, view=QuoteRoundView(channel_id, game["host_id"]))
+        title=f"💬  Guess by Quote  —  Round {round_num}/{total}",
+        description=(
+            f"{SEP}\n"
+            "*Which Honor of Kings hero said this?*\n\n"
+            f"**❝  {quote}  ❞**\n\n"
+            "Type the hero's name in this channel.\n"
+            f"First correct answer wins a point!\n"
+            f"{SEP}"
+        ), color=TEAL,
+    )
+    e.set_footer(text=f"⚜  Oblivion Empire  ·  {info.get('class','?')} · {info.get('lane','?')}",
+                 icon_url=logo_url() or discord.utils.MISSING)
+    await channel.send(embed=e, view=QuoteRoundView(channel_id, game["host_id"], round_id))
 
 
 async def _quote_next(channel, channel_id):
@@ -708,398 +601,344 @@ async def _quote_next(channel, channel_id):
     await asyncio.sleep(3)
     await _quote_round(channel, channel_id)
 
-
 async def _quote_end(channel, channel_id):
     game = active_quote.pop(channel_id, None)
     if not game: return
-    scores = game.get("scores", {})
-    e = discord.Embed(title="🏁 Guess by Quote — Game Over!",
-                      description=f"*{len(game.get('used',[]))} quotes shown.*",
-                      color=EMPIRE_GOLD)
-    _add_score_field(e, scores, channel.guild)
-    _persist_scores(scores)
+    scores = game.get("scores",{})
+    e = discord.Embed(
+        title="🏁  Guess by Quote  —  Game Over!",
+        description=f"{SEP}\n*{len(game.get('used',[]))} quotes shown.*\n{SEP}",
+        color=GOLD,
+    )
+    _add_scores(e, scores, channel.guild)
+    _save_scores(scores)
     brand(e); await channel.send(embed=e)
 
-# ─── Shared score helpers ─────────────────────────────────────────────
+# ─── Shared score helpers ──────────────────────────────────────────────
 
-def _add_score_field(embed, scores, guild):
+def _add_scores(embed: discord.Embed, scores: dict, guild: discord.Guild):
     if not scores:
         embed.add_field(name="📊 Scores", value="No points scored.", inline=False); return
     medals = ["🥇","🥈","🥉"]; lines = []
-    for i, (uid, pts) in enumerate(sorted(scores.items(), key=lambda x:-x[1])[:10], 1):
+    for n, (uid, pts) in enumerate(sorted(scores.items(), key=lambda x:-x[1])[:10], 1):
         mem   = guild.get_member(int(uid))
         name  = mem.display_name if mem else f"ID:{uid}"
-        medal = medals[i-1] if i <= 3 else f"`{i}.`"
-        lines.append(f"{medal} **{name}** — {pts} pt{'s' if pts!=1 else ''}")
+        medal = medals[n-1] if n <= 3 else f"`{n}.`"
+        lines.append(f"{medal}  **{name}**  —  {pts} pt{'s' if pts!=1 else ''}")
     embed.add_field(name="📊 Final Scores", value="\n".join(lines), inline=False)
 
-
-def _persist_scores(scores):
+def _save_scores(scores: dict):
     for uid, pts in scores.items():
         db["game_scores"][uid] = db["game_scores"].get(uid, 0) + pts
     save_db(db)
 
 # ══════════════════════════════════════════════════════════════════════
 #  GAME 3 — MAFIA  (host-controlled, no timers)
-#
-#  Flow:
-#    Lobby → Start → Day Discussion (no timer)
-#       → host clicks "Open Voting" → Voting (no timer)
-#       → host clicks "Tally Votes" → elimination announced
-#       → Night (no timer, DMs sent)
-#       → host clicks "Dawn" → night resolved, next Day begins
-#
-#  If host is eliminated → first remaining player becomes new host.
 # ══════════════════════════════════════════════════════════════════════
 
-MAFIA_ROLES: dict[str, dict] = {
-    "Mafia":     {"emoji": "🗡️", "team": "mafia",   "desc": "Eliminate a villager each night. Blend in during the day."},
-    "Detective": {"emoji": "🔍", "team": "village", "desc": "Investigate one player per night — learn if they are Mafia."},
-    "Doctor":    {"emoji": "💊", "team": "village", "desc": "Protect one player from elimination each night."},
-    "Villager":  {"emoji": "🏡", "team": "village", "desc": "Vote out the Mafia during the day. Trust no one."},
+MAFIA_ROLES: dict[str,dict] = {
+    "Mafia":     {"emoji":"🗡️","team":"mafia",  "desc":"Eliminate a villager each night. Blend in during the day."},
+    "Detective": {"emoji":"🔍","team":"village","desc":"Investigate one player per night — learn if they are Mafia."},
+    "Doctor":    {"emoji":"💊","team":"village","desc":"Protect one player from elimination each night."},
+    "Villager":  {"emoji":"🏡","team":"village","desc":"Vote out the Mafia during the day. Trust no one."},
 }
 
-
 def assign_roles(n: int) -> list[str]:
-    roles: list[str] = ["Mafia"] * max(1, n // 3)
+    roles: list[str] = ["Mafia"] * max(1, n//3)
     if n >= 5: roles.append("Doctor")
     if n >= 7: roles.append("Detective")
     roles += ["Villager"] * (n - len(roles))
     random.shuffle(roles); return roles
 
-
 class MafiaGame:
     def __init__(self, channel: discord.TextChannel, host: discord.Member):
-        self.channel   = channel
-        self.host      = host
-        self.players:  list[discord.Member] = [host]
-        self.roles:    dict[int, str]       = {}
-        self.alive:    list[discord.Member] = []
-        self.phase     = "lobby"
-        self.day       = 0
-        self.votes:    dict[int, int]       = {}
-        self.night_actions: dict[str, Optional[int]] = {
-            "Mafia": None, "Doctor": None, "Detective": None}
+        self.channel = channel; self.host = host
+        self.players: list[discord.Member] = [host]
+        self.roles:   dict[int,str]        = {}
+        self.alive:   list[discord.Member] = []
+        self.phase    = "lobby"; self.day = 0
+        self.votes:   dict[int,int]        = {}
+        self.night_actions: dict[str,Optional[int]] = {
+            "Mafia":None,"Doctor":None,"Detective":None}
         self.lobby_msg: Optional[discord.Message] = None
 
-    def get_role(self, m: discord.Member) -> str:
-        return self.roles.get(m.id, "Villager")
-
-    def is_mafia(self, m: discord.Member) -> bool:
-        return MAFIA_ROLES[self.get_role(m)]["team"] == "mafia"
-
+    def get_role(self, m: discord.Member) -> str: return self.roles.get(m.id,"Villager")
+    def is_mafia(self, m: discord.Member) -> bool: return MAFIA_ROLES[self.get_role(m)]["team"]=="mafia"
     def mafia_alive(self)   -> list[discord.Member]: return [m for m in self.alive if self.is_mafia(m)]
     def village_alive(self) -> list[discord.Member]: return [m for m in self.alive if not self.is_mafia(m)]
-
-    def check_win(self) -> Optional[str]:
+    def check_win(self)     -> Optional[str]:
         if not self.mafia_alive(): return "village"
         if len(self.mafia_alive()) >= len(self.village_alive()): return "mafia"
         return None
-
-    def transfer_host_if_needed(self):
-        """If host is dead, give control to first living player."""
+    def transfer_host(self):
         if self.host not in self.alive and self.alive:
             self.host = self.alive[0]
 
-
 def _lobby_embed(game: MafiaGame) -> discord.Embed:
     e = discord.Embed(
-        title="🎭 Mafia — Lobby",
+        title="🎭  Mafia  —  Lobby",
         description=(
-            f"*Host: **{game.host.display_name}***\n"
+            f"{SEP}\n"
+            f"*Host: **{game.host.display_name}***\n\n"
             "Need at least **4 players** to start.\n\n"
             "🗡️ **Mafia** — 1 per 3 players · eliminate villagers at night\n"
             "🏡 **Villagers** — vote out Mafia during the day\n"
             "💊 **Doctor** — protect someone per night *(5+ players)*\n"
-            "🔍 **Detective** — investigate someone per night *(7+ players)*"
-        ), color=EMPIRE_PURPLE)
-    e.add_field(name=f"👥 Players ({len(game.players)})",
+            "🔍 **Detective** — investigate someone per night *(7+ players)*\n"
+            f"{SEP}"
+        ), color=PHANTOM,
+    )
+    e.add_field(name=f"👥 Players  ({len(game.players)})",
                 value="\n".join(f"• {m.display_name}" for m in game.players) or "—", inline=False)
-    e.set_footer(text="⚜ Oblivion Empire | Mafia — click Join!")
+    e.set_footer(text="⚜  Oblivion Empire  ·  Mafia")
     return e
-
 
 class MafiaLobbyView(View):
     def __init__(self, game: MafiaGame):
-        super().__init__(timeout=None)
-        self.game = game
+        super().__init__(timeout=None); self.game = game
 
     @discord.ui.button(label="Join",   style=discord.ButtonStyle.success, emoji="✋")
-    async def join_btn(self, interaction: discord.Interaction, _: Button):
+    async def join_btn(self, i: discord.Interaction, _: Button):
         if self.game.phase != "lobby":
-            await interaction.response.send_message("❌ Already started.", ephemeral=True); return
-        if interaction.user in self.game.players:
-            await interaction.response.send_message("❌ Already joined.", ephemeral=True); return
-        self.game.players.append(interaction.user)
-        await interaction.response.send_message(f"✅ **{interaction.user.display_name}** joined!")
+            await i.response.send_message("❌ Already started.", ephemeral=True); return
+        if i.user in self.game.players:
+            await i.response.send_message("❌ Already joined.", ephemeral=True); return
+        self.game.players.append(i.user)
+        await i.response.send_message(f"✅ **{i.user.display_name}** joined the game!")
         if self.game.lobby_msg:
             try: await self.game.lobby_msg.edit(embed=_lobby_embed(self.game), view=self)
             except Exception: pass
 
     @discord.ui.button(label="Start",  style=discord.ButtonStyle.primary,  emoji="▶️")
-    async def start_btn(self, interaction: discord.Interaction, _: Button):
-        if interaction.user != self.game.host:
-            await interaction.response.send_message("❌ Only the host can start.", ephemeral=True); return
+    async def start_btn(self, i: discord.Interaction, _: Button):
+        if i.user != self.game.host:
+            await i.response.send_message("❌ Only the host can start.", ephemeral=True); return
         if len(self.game.players) < 4:
-            await interaction.response.send_message("❌ Need at least 4 players.", ephemeral=True); return
-        await interaction.response.defer()
+            await i.response.send_message("❌ Need at least 4 players.", ephemeral=True); return
+        await i.response.defer()
         await _mafia_start(self.game)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger,   emoji="❌")
-    async def cancel_btn(self, interaction: discord.Interaction, _: Button):
-        if interaction.user != self.game.host:
-            await interaction.response.send_message("❌ Only the host can cancel.", ephemeral=True); return
+    async def cancel_btn(self, i: discord.Interaction, _: Button):
+        if i.user != self.game.host:
+            await i.response.send_message("❌ Only the host can cancel.", ephemeral=True); return
         active_mafia.pop(self.game.channel.id, None)
-        await interaction.response.send_message(
-            embed=discord.Embed(title="❌ Mafia Game Cancelled", color=EMPIRE_RED))
+        await i.response.send_message(embed=empire_embed("❌  Mafia Cancelled","The game has been cancelled.",CRIMSON))
         self.stop()
-
 
 async def _mafia_start(game: MafiaGame):
     role_list = assign_roles(len(game.players))
     for member, role in zip(game.players, role_list):
         game.roles[member.id] = role
-    game.alive = list(game.players)
-    game.phase = "starting"
+    game.alive = list(game.players); game.phase = "starting"
 
     dm_fails: list[str] = []
     for member in game.players:
         role      = game.get_role(member)
         role_info = MAFIA_ROLES[role]
-        e = discord.Embed(title=f"🃏 Your Role — {role_info['emoji']} {role}",
-                          description=role_info["desc"],
-                          color=EMPIRE_RED if role == "Mafia" else EMPIRE_CYAN)
-        e.add_field(name="Team", value=role_info["team"].capitalize(), inline=True)
+        e = discord.Embed(
+            title=f"🃏  Your Role  —  {role_info['emoji']} {role}",
+            description=(
+                f"{SEP}\n{role_info['desc']}\n{SEP}\n\n"
+                f"**Team:** {role_info['team'].capitalize()}"
+            ), color=CRIMSON if role=="Mafia" else TEAL,
+        )
         if role == "Mafia":
             team = ", ".join(m.display_name for m in game.players if game.is_mafia(m))
-            e.add_field(name="🗡️ Your team", value=team, inline=False)
-        e.set_footer(text="⚜ Oblivion Empire | Keep your role secret!")
+            e.add_field(name="🗡️ Your Mafia", value=team, inline=False)
+        e.set_footer(text="⚜  Oblivion Empire  ·  Keep your role secret!")
         try:    await member.send(embed=e)
         except: dm_fails.append(member.display_name)
 
     names = "\n".join(f"• {m.display_name}" for m in game.players)
-    e = discord.Embed(title="🎭 The Game Begins!",
-                      description=(f"*{len(game.players)} players enter the darkness…*\n\n{names}\n\n"
-                                   "✉️ Check your **DMs** for your secret role!"
-                                   + (f"\n⚠️ DMs failed for: {', '.join(dm_fails)}" if dm_fails else "")),
-                      color=EMPIRE_PURPLE)
-    brand(e)
-    await game.channel.send(embed=e)
+    e = discord.Embed(
+        title="🎭  The Game Begins!",
+        description=(
+            f"{SEP}\n"
+            f"*{len(game.players)} players enter the darkness…*\n\n"
+            f"{names}\n\n"
+            "✉️ Check your **DMs** for your secret role!"
+            + (f"\n⚠️ DMs failed for: {', '.join(dm_fails)}" if dm_fails else "")
+            + f"\n{SEP}"
+        ), color=PHANTOM,
+    )
+    brand(e); await game.channel.send(embed=e)
     await asyncio.sleep(3)
     await _mafia_day(game)
 
-
-# ── Day phase ─────────────────────────────────────────────────────────
-
 class DayDiscussionView(View):
-    """Host presses 'Open Voting' when discussion is over."""
     def __init__(self, game: MafiaGame):
-        super().__init__(timeout=None)
-        self.game = game
+        super().__init__(timeout=None); self.game = game
 
     @discord.ui.button(label="📊 Open Voting", style=discord.ButtonStyle.primary, emoji="🗳️")
-    async def open_voting(self, interaction: discord.Interaction, _: Button):
-        if interaction.user != self.game.host:
-            await interaction.response.send_message(
-                "❌ Only **the host** can open voting.", ephemeral=True); return
+    async def open_voting(self, i: discord.Interaction, _: Button):
+        if i.user != self.game.host:
+            await i.response.send_message("❌ Only **the host** can open voting.", ephemeral=True); return
         self.stop()
-        names  = " · ".join(m.display_name for m in self.game.alive)
+        names = " · ".join(m.display_name for m in self.game.alive)
         e = discord.Embed(
-            title=f"🗳️ Day {self.game.day} — Voting Open",
-            description=(f"*{len(self.game.alive)} players alive.*\n\n"
-                         f"**Alive:** {names}\n\n"
-                         "Use the dropdown to vote who to eliminate.\n"
-                         "When everyone has voted, the host tallies the results."),
-            color=EMPIRE_GOLD)
+            title=f"🗳️  Day {self.game.day}  —  Voting Open",
+            description=(
+                f"{SEP}\n"
+                f"*{len(self.game.alive)} players alive.*  **Alive:** {names}\n\n"
+                "Vote below to eliminate a suspect.\n"
+                "When ready, the **host** tallies the results.\n"
+                f"{SEP}"
+            ), color=GOLD,
+        )
         brand(e)
-        view = DayVotingView(self.game)
-        await interaction.response.send_message(embed=e, view=view)
-        self.game._voting_view = view
-
+        await i.response.send_message(embed=e, view=DayVotingView(self.game))
 
 class DayVotingView(View):
-    """Voting dropdown + host's Tally button."""
     def __init__(self, game: MafiaGame):
-        super().__init__(timeout=None)
-        self.game = game
-        opts = [discord.SelectOption(label=m.display_name[:100], value=str(m.id))
-                for m in game.alive]
-        sel = Select(placeholder="🗳️ Vote to eliminate...", options=opts)
+        super().__init__(timeout=None); self.game = game
+        opts = [discord.SelectOption(label=m.display_name[:100], value=str(m.id)) for m in game.alive]
+        sel  = Select(placeholder="🗳️  Vote to eliminate…", options=opts)
         sel.callback = self._on_vote; self.add_item(sel)
 
-    async def _on_vote(self, interaction: discord.Interaction):
-        if interaction.user not in self.game.alive:
-            await interaction.response.send_message("❌ You are eliminated.", ephemeral=True); return
-        tid = int(interaction.data["values"][0])
-        if tid == interaction.user.id:
-            await interaction.response.send_message("❌ Can't vote yourself.", ephemeral=True); return
-        self.game.votes[interaction.user.id] = tid
-        target = interaction.guild.get_member(tid)
-        vote_count = len(self.game.votes)
-        alive_count = len(self.game.alive)
-        await interaction.response.send_message(
-            f"🗳️ Vote cast for **{target.display_name if target else '?'}**.\n"
-            f"*{vote_count}/{alive_count} players have voted.*", ephemeral=True)
+    async def _on_vote(self, i: discord.Interaction):
+        if i.user not in self.game.alive:
+            await i.response.send_message("❌ You are eliminated.", ephemeral=True); return
+        tid = int(i.data["values"][0])
+        if tid == i.user.id:
+            await i.response.send_message("❌ Can't vote for yourself.", ephemeral=True); return
+        self.game.votes[i.user.id] = tid
+        target = i.guild.get_member(tid)
+        await i.response.send_message(
+            f"🗳️ Voted for **{target.display_name if target else '?'}**.\n"
+            f"*{len(self.game.votes)}/{len(self.game.alive)} players voted.*", ephemeral=True)
 
     @discord.ui.button(label="⚖️ Tally Votes", style=discord.ButtonStyle.danger, emoji="⚖️", row=1)
-    async def tally_btn(self, interaction: discord.Interaction, _: Button):
-        if interaction.user != self.game.host:
-            await interaction.response.send_message(
-                "❌ Only **the host** can tally votes.", ephemeral=True); return
-        self.stop()
-        await interaction.response.defer()
+    async def tally_btn(self, i: discord.Interaction, _: Button):
+        if i.user != self.game.host:
+            await i.response.send_message("❌ Only **the host** can tally votes.", ephemeral=True); return
+        self.stop(); await i.response.defer()
         await _mafia_resolve_votes(self.game)
 
-
 async def _mafia_day(game: MafiaGame):
-    game.phase = "day"
-    game.day  += 1
-    game.votes = {}
-    game.transfer_host_if_needed()
-
-    if w := game.check_win():
-        await _mafia_end(game, w); return
-
+    game.phase = "day"; game.day += 1; game.votes = {}
+    game.transfer_host()
+    if w := game.check_win(): await _mafia_end(game,w); return
     names = " · ".join(m.display_name for m in game.alive)
     e = discord.Embed(
-        title=f"☀️ Day {game.day} — Discussion",
-        description=(f"*{len(game.alive)} players remain.*\n\n"
-                     f"**Alive:** {names}\n\n"
-                     "Discuss freely. When ready, **the host** opens voting."),
-        color=EMPIRE_GOLD)
-    e.set_footer(text=f"⚜ Oblivion Empire | Host: {game.host.display_name}")
-    brand(e)
-    await game.channel.send(embed=e, view=DayDiscussionView(game))
-
+        title=f"☀️  Day {game.day}  —  Discussion",
+        description=(
+            f"{SEP}\n"
+            f"*{len(game.alive)} players remain.*\n\n"
+            f"**Alive:** {names}\n\n"
+            "Discuss freely. When ready, **the host** opens voting.\n"
+            f"{SEP}"
+        ), color=GOLD,
+    )
+    e.set_footer(text=f"⚜  Oblivion Empire  ·  Host: {game.host.display_name}")
+    brand(e); await game.channel.send(embed=e, view=DayDiscussionView(game))
 
 async def _mafia_resolve_votes(game: MafiaGame):
     if not game.votes:
-        await game.channel.send(embed=discord.Embed(
-            title="🗳️ No Votes Cast",
-            description="Nobody voted. Moving to night…", color=EMPIRE_PURPLE))
+        await game.channel.send(embed=empire_embed(
+            "🗳️  No Votes Cast","Nobody voted. Moving to night…", VIOLET)); 
     else:
-        tally: dict[int, int] = {}
-        for tid in game.votes.values(): tally[tid] = tally.get(tid, 0) + 1
-        max_votes = max(tally.values())
-        leaders   = [tid for tid, v in tally.items() if v == max_votes]
-
+        tally: dict[int,int] = {}
+        for tid in game.votes.values(): tally[tid] = tally.get(tid,0)+1
+        max_v   = max(tally.values())
+        leaders = [tid for tid,v in tally.items() if v==max_v]
         if len(leaders) > 1:
-            # Tie — no elimination
-            names_tied = ", ".join(
-                g.display_name if (g := game.channel.guild.get_member(tid)) else "?" for tid in leaders)
-            await game.channel.send(embed=discord.Embed(
-                title="⚖️ It's a Tie!",
-                description=f"**{names_tied}** each received **{max_votes}** votes.\nNo one is eliminated.",
-                color=EMPIRE_PURPLE))
+            tied = ", ".join(
+                (g.display_name if (g:=game.channel.guild.get_member(tid)) else "?") for tid in leaders)
+            await game.channel.send(embed=empire_embed(
+                "⚖️  Tie!",f"**{tied}** each received **{max_v}** votes. Nobody eliminated.",VIOLET))
         else:
-            elim_id = leaders[0]
-            elim    = game.channel.guild.get_member(elim_id)
+            elim = game.channel.guild.get_member(leaders[0])
             if elim and elim in game.alive:
                 game.alive.remove(elim)
                 ri = MAFIA_ROLES[game.get_role(elim)]
                 await game.channel.send(embed=discord.Embed(
-                    title="⚖️ Eliminated!",
+                    title="⚖️  Eliminated!",
                     description=(f"**{elim.display_name}** was voted out.\n"
                                  f"They were: {ri['emoji']} **{game.get_role(elim)}**"),
-                    color=EMPIRE_RED))
-
-    if w := game.check_win():
-        await _mafia_end(game, w); return
-
-    await asyncio.sleep(2)
-    await _mafia_night(game)
-
-
-# ── Night phase ───────────────────────────────────────────────────────
+                    color=CRIMSON))
+    if w := game.check_win(): await _mafia_end(game,w); return
+    await asyncio.sleep(2); await _mafia_night(game)
 
 class NightActionView(View):
     def __init__(self, game: MafiaGame, actor_role: str, user_id: int):
         super().__init__(timeout=None)
         self.game, self.actor_role, self.user_id = game, actor_role, user_id
-        targets = game.alive if actor_role == "Doctor" else game.village_alive()
+        targets = game.alive if actor_role=="Doctor" else game.village_alive()
         opts    = [discord.SelectOption(label=m.display_name[:100], value=str(m.id))
-                   for m in targets if m.id != user_id]
+                   for m in targets if m.id!=user_id]
         if not opts: return
-        labels  = {"Mafia": "🗡️ Eliminate…", "Doctor": "💊 Protect…", "Detective": "🔍 Investigate…"}
-        sel     = Select(placeholder=labels.get(actor_role, "Select…"), options=opts)
+        labels  = {"Mafia":"🗡️ Eliminate…","Doctor":"💊 Protect…","Detective":"🔍 Investigate…"}
+        sel     = Select(placeholder=labels.get(actor_role,"Select…"), options=opts)
         sel.callback = self._on_select; self.add_item(sel)
 
-    async def _on_select(self, interaction: discord.Interaction):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ Not yours.", ephemeral=True); return
-        tid = int(interaction.data["values"][0])
+    async def _on_select(self, i: discord.Interaction):
+        if i.user.id != self.user_id:
+            await i.response.send_message("❌ Not yours.", ephemeral=True); return
+        tid = int(i.data["values"][0])
         self.game.night_actions[self.actor_role] = tid
-        target = interaction.guild.get_member(tid)
+        target = i.guild.get_member(tid)
         msgs = {
             "Mafia":     f"🗡️ Target locked: **{target.display_name if target else '?'}**",
             "Doctor":    f"💊 Protecting **{target.display_name if target else '?'}** tonight.",
             "Detective": f"🔍 Investigating **{target.display_name if target else '?'}**…",
         }
-        await interaction.response.send_message(msgs.get(self.actor_role, "✅ Done."), ephemeral=True)
+        await i.response.send_message(msgs.get(self.actor_role,"✅ Done."), ephemeral=True)
         self.stop()
-
 
 class NightHostView(View):
-    """Host presses 'Dawn' to end the night and resolve actions."""
     def __init__(self, game: MafiaGame):
-        super().__init__(timeout=None)
-        self.game = game
+        super().__init__(timeout=None); self.game = game
 
     @discord.ui.button(label="🌅 Dawn — End Night", style=discord.ButtonStyle.success, emoji="☀️")
-    async def dawn_btn(self, interaction: discord.Interaction, _: Button):
-        if interaction.user != self.game.host:
-            await interaction.response.send_message(
-                "❌ Only **the host** can end the night.", ephemeral=True); return
-        self.stop()
-        await interaction.response.defer()
+    async def dawn_btn(self, i: discord.Interaction, _: Button):
+        if i.user != self.game.host:
+            await i.response.send_message("❌ Only **the host** can end the night.", ephemeral=True); return
+        self.stop(); await i.response.defer()
         await _mafia_resolve_night(self.game)
 
-
 async def _mafia_night(game: MafiaGame):
-    game.phase        = "night"
-    game.night_actions = {"Mafia": None, "Doctor": None, "Detective": None}
-    game.transfer_host_if_needed()
-
+    game.phase = "night"
+    game.night_actions = {"Mafia":None,"Doctor":None,"Detective":None}
+    game.transfer_host()
     e = discord.Embed(
-        title=f"🌙 Night {game.day} — Darkness Falls",
-        description=("Special roles — check your **DMs** for your action menu.\n\n"
-                     "When everyone is done, **the host** clicks Dawn to continue."),
-        color=0x1a1a2e)
-    e.set_footer(text=f"⚜ Oblivion Empire | Host: {game.host.display_name}")
-    brand(e)
-    await game.channel.send(embed=e, view=NightHostView(game))
-
-    # Send DMs to special roles
+        title=f"🌙  Night {game.day}  —  Darkness Falls",
+        description=(
+            f"{SEP}\n"
+            "Special roles — check your **DMs** for your action menu.\n\n"
+            "When everyone is done, **the host** clicks Dawn to continue.\n"
+            f"{SEP}"
+        ), color=PHANTOM,
+    )
+    e.set_footer(text=f"⚜  Oblivion Empire  ·  Host: {game.host.display_name}")
+    brand(e); await game.channel.send(embed=e, view=NightHostView(game))
     for member in game.alive:
         role = game.get_role(member)
-        if role not in ("Mafia", "Doctor", "Detective"): continue
+        if role not in ("Mafia","Doctor","Detective"): continue
         ae = discord.Embed(
-            title=f"🌙 Night Action — {MAFIA_ROLES[role]['emoji']} {role}",
-            description="Use the dropdown below to take your action.",
-            color=EMPIRE_PURPLE)
-        ae.set_footer(text="⚜ Oblivion Empire | Mafia Night Phase")
-        try:    await member.send(embed=ae, view=NightActionView(game, role, member.id))
+            title=f"🌙  Night Action  —  {MAFIA_ROLES[role]['emoji']} {role}",
+            description=f"{SEP}\nUse the dropdown below to take your action.\n{SEP}",
+            color=PHANTOM,
+        )
+        ae.set_footer(text="⚜  Oblivion Empire  ·  Mafia Night Phase")
+        try:    await member.send(embed=ae, view=NightActionView(game,role,member.id))
         except: pass
-
 
 async def _mafia_resolve_night(game: MafiaGame):
     elim_id   = game.night_actions.get("Mafia")
     prot_id   = game.night_actions.get("Doctor")
     invest_id = game.night_actions.get("Detective")
-
-    # Detective DM
     if invest_id:
         target = game.channel.guild.get_member(invest_id)
-        det    = next((m for m in game.alive if game.get_role(m) == "Detective"), None)
+        det    = next((m for m in game.alive if game.get_role(m)=="Detective"), None)
         if target and det:
-            is_maf = game.get_role(target) == "Mafia"
+            is_maf = game.get_role(target)=="Mafia"
             try:
                 await det.send(embed=discord.Embed(
-                    title="🔍 Investigation Result",
+                    title="🔍  Investigation Result",
                     description=f"**{target.display_name}** is {'🗡️ **Mafia**' if is_maf else '🏡 **Village**'}!",
-                    color=EMPIRE_RED if is_maf else EMPIRE_GREEN))
+                    color=CRIMSON if is_maf else EMERALD))
             except Exception: pass
-
     dawn: list[str] = []
     if elim_id and elim_id != prot_id:
         victim = game.channel.guild.get_member(elim_id)
@@ -1112,33 +951,32 @@ async def _mafia_resolve_night(game: MafiaGame):
         dawn.append("💊 Someone was targeted but **survived** — the Doctor saved them!")
     else:
         dawn.append("😴 A quiet night. Nobody was eliminated.")
-
-    e = discord.Embed(title=f"🌅 Dawn — Day {game.day + 1}",
-                      description="\n".join(dawn), color=EMPIRE_GOLD)
-    brand(e)
-    await game.channel.send(embed=e)
-
-    if w := game.check_win():
-        await _mafia_end(game, w); return
-    await asyncio.sleep(2)
-    await _mafia_day(game)
-
+    e = discord.Embed(
+        title=f"🌅  Dawn  —  Day {game.day+1}",
+        description=f"{SEP}\n" + "\n".join(dawn) + f"\n{SEP}",
+        color=GOLD,
+    )
+    brand(e); await game.channel.send(embed=e)
+    if w := game.check_win(): await _mafia_end(game,w); return
+    await asyncio.sleep(2); await _mafia_day(game)
 
 async def _mafia_end(game: MafiaGame, winner: str):
-    game.phase = "ended"
-    active_mafia.pop(game.channel.id, None)
+    game.phase = "ended"; active_mafia.pop(game.channel.id,None)
     if winner == "village":
-        title, desc, color = "🏡 Village Wins!", "The Mafia is eliminated. Oblivion Empire is safe!", EMPIRE_GREEN
+        title, desc, color = "🏡  Village Wins!", "The Mafia is gone. Oblivion Empire is safe!", EMERALD
     else:
-        title, desc, color = "🗡️ Mafia Wins!", "The Mafia controls Oblivion Empire. Darkness reigns…", EMPIRE_RED
+        title, desc, color = "🗡️  Mafia Wins!", "The Mafia controls Oblivion Empire. Darkness reigns…", CRIMSON
     reveal = "\n".join(
         f"{MAFIA_ROLES[game.get_role(m)]['emoji']} **{m.display_name}** — {game.get_role(m)}"
         for m in game.players)
-    e = discord.Embed(title=title, description=desc, color=color)
+    e = discord.Embed(
+        title=title,
+        description=f"{SEP}\n{desc}\n{SEP}",
+        color=color,
+    )
     e.add_field(name="🃏 Full Role Reveal", value=reveal, inline=False)
-    brand(e)
-    await game.channel.send(embed=e)
-    await log_action(game.channel.guild, "🎭 Mafia Ended",
+    brand(e); await game.channel.send(embed=e)
+    await log_action(game.channel.guild,"🎭 Mafia Ended",
         f"#{game.channel.name} — {winner} won · {len(game.players)} players")
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1148,94 +986,99 @@ async def _mafia_end(game: MafiaGame, winner: str):
 class GamesPanelView(View):
     def __init__(self): super().__init__(timeout=None)
 
-    @discord.ui.button(label="Guess by Picture", emoji="🖼️",
-                       style=discord.ButtonStyle.primary, row=0)
-    async def picture_btn(self, interaction: discord.Interaction, _: Button):
-        cid  = interaction.channel_id
+    @discord.ui.button(label="Guess by Picture", emoji="🖼️", style=discord.ButtonStyle.primary,   row=0)
+    async def picture_btn(self, i: discord.Interaction, _: Button):
+        cid  = i.channel_id
         busy = channel_busy(cid)
         if busy:
-            await interaction.response.send_message(f"❌ **{busy}** is already running here!", ephemeral=True); return
-        images = db.get("hero_images", {})
+            await i.response.send_message(f"❌ **{busy}** is already running here!", ephemeral=True); return
+        images = db.get("hero_images",{})
         if not any(v for v in images.values()):
-            await interaction.response.send_message(embed=discord.Embed(
-                title="⚠️ No Hero Images Yet",
-                description=("Use `/set_hero_image` to add images:\n\n"
-                             "1. Type `/set_hero_image` in Discord\n"
-                             "2. Pick the hero from the autocomplete list\n"
-                             "3. Attach the image file (.png/.jpg/.webp)\n"
-                             "4. Done!\n\nUse `/hero_images` to see progress."),
-                color=EMPIRE_RED), ephemeral=True); return
+            await i.response.send_message(embed=empire_embed(
+                "⚠️  No Hero Images Yet",
+                "Use `/set_hero_image` to add images:\n\n"
+                "1. Type `/set_hero_image` in Discord\n"
+                "2. Pick the hero from the autocomplete list\n"
+                "3. Attach the image file (.png/.jpg/.webp)\n\n"
+                "Use `/hero_images` to track progress.", CRIMSON), ephemeral=True); return
         hero_cnt = sum(1 for h in images if images[h])
         e = discord.Embed(
-            title="🖼️ Guess by Picture — Choose Difficulty",
-            description=(f"*Host: **{interaction.user.display_name}***\n\n"
-                         f"**{hero_cnt}** heroes ready.\n\n"
-                         "Pick the difficulty level — it controls how much of the image is shown:\n"
-                         "🟢 **Easy** — 55–75% visible\n"
-                         "🟡 **Medium** — 25–55% visible\n"
-                         "🔴 **Hard** — 6–25% visible (very hard!)\n"
-                         "🎲 **Random** — different every round"),
-            color=EMPIRE_GOLD)
+            title="🖼️  Guess by Picture  —  Choose Difficulty",
+            description=(
+                f"{SEP}\n"
+                f"*Host: **{i.user.display_name}***\n\n"
+                f"**{hero_cnt}** heroes ready in the pool.\n\n"
+                "🟢 **Easy** — 55–75% of image visible\n"
+                "🟡 **Medium** — 25–55% visible\n"
+                "🔴 **Hard** — 6–25% visible *(very hard!)*\n"
+                "🎲 **Random** — different every round\n"
+                f"{SEP}"
+            ), color=AMBER,
+        )
         brand(e)
-        await interaction.response.send_message(
-            embed=e, view=DifficultySelectView(cid, interaction.user.id))
-        await log_action(interaction.guild, "🖼️ Picture Game",
-            f"{interaction.user.mention} starting Guess by Picture in #{interaction.channel.name}")
+        await i.response.send_message(embed=e, view=DifficultyView(cid, i.user.id))
+        await log_action(i.guild,"🖼️ Picture Game",
+            f"{i.user.mention} starting Guess by Picture in #{i.channel.name}")
 
-    @discord.ui.button(label="Guess by Quote", emoji="💬",
-                       style=discord.ButtonStyle.success, row=0)
-    async def quote_btn(self, interaction: discord.Interaction, _: Button):
-        cid  = interaction.channel_id
+    @discord.ui.button(label="Guess by Quote",   emoji="💬", style=discord.ButtonStyle.success,   row=0)
+    async def quote_btn(self, i: discord.Interaction, _: Button):
+        cid  = i.channel_id
         busy = channel_busy(cid)
         if busy:
-            await interaction.response.send_message(f"❌ **{busy}** is already running here!", ephemeral=True); return
-        active_quote[cid] = {"host_id": interaction.user.id,
-                             "hero": None, "used": [], "scores": {}, "revealed": True}
+            await i.response.send_message(f"❌ **{busy}** is already running here!", ephemeral=True); return
+        active_quote[cid] = {
+            "host_id":i.user.id, "hero":None, "round_id":None,
+            "used":[], "scores":{}, "revealed":True,
+        }
         e = discord.Embed(
-            title="💬 Guess by Quote — Starting!",
-            description=(f"*Hosted by **{interaction.user.display_name}***\n\n"
-                         "A hero quote will appear. **Type who said it** to win a point!\n\n"
-                         f"💬 **{len(HOK_QUOTES)}** heroes in the pool."),
-            color=EMPIRE_CYAN)
+            title="💬  Guess by Quote  —  Starting!",
+            description=(
+                f"{SEP}\n"
+                f"*Hosted by **{i.user.display_name}***\n\n"
+                "A hero quote will appear below.\n"
+                "**Type who said it** to win a point!\n\n"
+                f"💬 **{len(HOK_QUOTES)}** heroes in the pool.\n"
+                f"{SEP}"
+            ), color=TEAL,
+        )
         brand(e)
-        await interaction.response.send_message(embed=e)
+        await i.response.send_message(embed=e)
         await asyncio.sleep(2)
-        await _quote_round(interaction.channel, cid)
-        await log_action(interaction.guild, "💬 Quote Game",
-            f"{interaction.user.mention} started in #{interaction.channel.name}")
+        await _quote_round(i.channel, cid)
+        await log_action(i.guild,"💬 Quote Game",
+            f"{i.user.mention} started in #{i.channel.name}")
 
-    @discord.ui.button(label="Mafia", emoji="🎭",
-                       style=discord.ButtonStyle.danger, row=0)
-    async def mafia_btn(self, interaction: discord.Interaction, _: Button):
-        cid  = interaction.channel_id
+    @discord.ui.button(label="Mafia",            emoji="🎭", style=discord.ButtonStyle.danger,    row=0)
+    async def mafia_btn(self, i: discord.Interaction, _: Button):
+        cid  = i.channel_id
         busy = channel_busy(cid)
         if busy:
-            await interaction.response.send_message(f"❌ **{busy}** is already running here!", ephemeral=True); return
-        game = MafiaGame(interaction.channel, interaction.user)
+            await i.response.send_message(f"❌ **{busy}** is already running here!", ephemeral=True); return
+        game = MafiaGame(i.channel, i.user)
         active_mafia[cid] = game
         view = MafiaLobbyView(game)
-        await interaction.response.send_message(embed=_lobby_embed(game), view=view)
-        game.lobby_msg = await interaction.original_response()
-        await log_action(interaction.guild, "🎭 Mafia Lobby",
-            f"{interaction.user.mention} opened in #{interaction.channel.name}")
+        await i.response.send_message(embed=_lobby_embed(game), view=view)
+        game.lobby_msg = await i.original_response()
+        await log_action(i.guild,"🎭 Mafia Lobby",
+            f"{i.user.mention} opened in #{i.channel.name}")
 
-    @discord.ui.button(label="All-Time Scores", emoji="🏅",
-                       style=discord.ButtonStyle.secondary, row=1)
-    async def scores_btn(self, interaction: discord.Interaction, _: Button):
-        scores = db.get("game_scores", {})
+    @discord.ui.button(label="All-Time Scores",  emoji="🏅", style=discord.ButtonStyle.secondary, row=1)
+    async def scores_btn(self, i: discord.Interaction, _: Button):
+        scores = db.get("game_scores",{})
         if not scores:
-            await interaction.response.send_message(
-                embed=discord.Embed(title="🏅 No Scores Yet",
-                                    description="Play some games first!", color=EMPIRE_PURPLE), ephemeral=True); return
+            await i.response.send_message(empire_embed("🏅  No Scores Yet","Play some games first!", VIOLET), ephemeral=True); return
         medals = ["🥇","🥈","🥉"]; lines = []
-        for i, (uid, pts) in enumerate(sorted(scores.items(), key=lambda x:-x[1])[:15], 1):
-            mem   = interaction.guild.get_member(int(uid))
+        for n, (uid, pts) in enumerate(sorted(scores.items(), key=lambda x:-x[1])[:15], 1):
+            mem   = i.guild.get_member(int(uid))
             name  = mem.display_name if mem else f"ID:{uid}"
-            medal = medals[i-1] if i <= 3 else f"`{i}.`"
-            lines.append(f"{medal} **{name}** — {pts} pt{'s' if pts!=1 else ''}")
-        e = discord.Embed(title="🏅 All-Time Scores", description="\n".join(lines), color=EMPIRE_GOLD)
-        brand(e)
-        await interaction.response.send_message(embed=e, ephemeral=True)
+            medal = medals[n-1] if n <= 3 else f"`{n}.`"
+            lines.append(f"{medal}  **{name}**  —  {pts} pt{'s' if pts!=1 else ''}")
+        e = discord.Embed(
+            title="🏅  All-Time Scores",
+            description=f"{SEP}\n" + "\n".join(lines) + f"\n{SEP}",
+            color=GOLD,
+        )
+        brand(e); await i.response.send_message(embed=e, ephemeral=True)
 
 # ══════════════════════════════════════════════════════════════════════
 #  COG
@@ -1244,37 +1087,48 @@ class GamesPanelView(View):
 class GamesCog(commands.Cog):
     def __init__(self, bot_instance: commands.Bot):
         self.bot = bot_instance
-        # Populate hero name list for /set_hero_image autocomplete
         _all_hero_names.clear()
         _all_hero_names.extend(sorted(HOK_HEROES.keys()))
 
     @app_commands.command(name="games", description="🎮 Open the Oblivion Empire games panel")
-    async def cmd_games(self, interaction: discord.Interaction):
-        images   = db.get("hero_images", {})
-        img_cnt  = sum(1 for h in images if images[h])
-        e = discord.Embed(title="🎮 Oblivion Empire — Games",
-                          description="*Welcome to the arena, warrior.*", color=EMPIRE_PURPLE)
+    async def cmd_games(self, i: discord.Interaction):
+        images  = db.get("hero_images",{})
+        img_cnt = sum(1 for h in images if images[h])
+        e = discord.Embed(
+            title="🎮  Oblivion Empire  —  Games",
+            description=(
+                f"{SEP}\n"
+                "*Welcome to the arena, warrior.*\n"
+                f"{SEP}"
+            ), color=VIOLET,
+        )
+        e.set_thumbnail(url=logo_url() or (bot_avatar() or discord.utils.MISSING))
         e.add_field(name="🖼️ Guess by Picture",
                     value=(f"A cropped hero image appears — type the name to win.\n"
-                           f"*{img_cnt} hero{'es' if img_cnt!=1 else ''} ready · 3 difficulty levels*\n"
-                           f"*(Admins: `/set_hero_image` to add images)*"), inline=False)
+                           f"*{img_cnt} hero{'es' if img_cnt!=1 else ''} ready · Easy / Medium / Hard / Random*"),
+                    inline=False)
         e.add_field(name="💬 Guess by Quote",
                     value=(f"A hero quote appears — type who said it to win.\n"
-                           f"*{len(HOK_QUOTES)} heroes · no setup needed*"), inline=False)
+                           f"*{len(HOK_QUOTES)} heroes · works immediately, no setup needed*"),
+                    inline=False)
         e.add_field(name="🎭 Mafia",
-                    value="Social deduction — Villagers vs Mafia.\n4+ players · host-controlled · no timers.", inline=False)
-        e.add_field(name="🏅 All-Time Scores", value="Combined leaderboard.", inline=False)
-        av = bot_avatar()
-        if av: e.set_thumbnail(url=av)
-        e.set_footer(text="⚜ Oblivion Empire | Games Panel")
-        await interaction.response.send_message(embed=e, view=GamesPanelView())
+                    value="Social deduction — Villagers vs Mafia.\n4+ players · host-controlled · no timers.",
+                    inline=False)
+        e.add_field(name="🏅 All-Time Scores", value="Combined leaderboard across both guess games.", inline=False)
+        e.set_footer(text="⚜  Oblivion Empire  ·  Games Panel", icon_url=logo_url() or discord.utils.MISSING)
+        await i.response.send_message(embed=e, view=GamesPanelView())
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        """
+        BUG FIX: Both game checks run independently.
+        The picture game no longer has a bare 'return' that blocks the quote game.
+        Each game is checked only if a game is active AND the round is unrevealed.
+        """
         if message.author.bot: return
         cid = message.channel.id
 
-        # Picture game
+        # ── Picture game ───────────────────────────────────────────
         pg = active_picture.get(cid)
         if pg and not pg.get("revealed") and pg.get("hero"):
             if check_guess(message.content, pg["hero"]):
@@ -1282,21 +1136,27 @@ class GamesCog(commands.Cog):
                 uid = str(message.author.id)
                 pg["scores"][uid] = pg["scores"].get(uid, 0) + 1
                 pts  = pg["scores"][uid]
-                info = HOK_HEROES.get(pg["hero"], {})
+                info = HOK_HEROES.get(pg["hero"],{})
                 e = discord.Embed(
-                    title="✅ Correct!",
-                    description=(f"🎉 **{message.author.display_name}** got it!\n\n"
-                                 f"The hero was **{pg['hero']}**\n"
-                                 f"{info.get('class','?')} · {info.get('lane','?')}\n\n"
-                                 f"They now have **{pts}** point{'s' if pts!=1 else ''} this game."),
-                    color=EMPIRE_GREEN)
-                e.set_footer(text="⚜ Oblivion Empire | Next hero coming up…")
+                    title="✅  Correct!",
+                    description=(
+                        f"{SEP}\n"
+                        f"🎉 **{message.author.display_name}** got it!\n\n"
+                        f"The hero was **{pg['hero']}**\n"
+                        f"*{info.get('class','?')} · {info.get('lane','?')}*\n\n"
+                        f"They now have **{pts}** point{'s' if pts!=1 else ''} this game.\n"
+                        f"{SEP}"
+                    ), color=EMERALD,
+                )
+                e.set_footer(text="⚜  Oblivion Empire  ·  Next hero coming up…",
+                             icon_url=logo_url() or discord.utils.MISSING)
                 await message.channel.send(embed=e)
                 await asyncio.sleep(3)
                 await _picture_next(message.channel, cid)
-            return
+            # NOTE: no return here — allow quote game to also check if needed
+            # (in practice only one game runs per channel, but this is safer)
 
-        # Quote game
+        # ── Quote game ─────────────────────────────────────────────
         qg = active_quote.get(cid)
         if qg and not qg.get("revealed") and qg.get("hero"):
             if check_guess(message.content, qg["hero"]):
@@ -1304,15 +1164,20 @@ class GamesCog(commands.Cog):
                 uid = str(message.author.id)
                 qg["scores"][uid] = qg["scores"].get(uid, 0) + 1
                 pts  = qg["scores"][uid]
-                info = HOK_HEROES.get(qg["hero"], {})
+                info = HOK_HEROES.get(qg["hero"],{})
                 e = discord.Embed(
-                    title="✅ Correct!",
-                    description=(f"🎉 **{message.author.display_name}** got it!\n\n"
-                                 f"That was **{qg['hero']}**\n"
-                                 f"{info.get('class','?')} · {info.get('lane','?')}\n\n"
-                                 f"They now have **{pts}** point{'s' if pts!=1 else ''} this game."),
-                    color=EMPIRE_GREEN)
-                e.set_footer(text="⚜ Oblivion Empire | Next quote coming up…")
+                    title="✅  Correct!",
+                    description=(
+                        f"{SEP}\n"
+                        f"🎉 **{message.author.display_name}** got it!\n\n"
+                        f"That was **{qg['hero']}**\n"
+                        f"*{info.get('class','?')} · {info.get('lane','?')}*\n\n"
+                        f"They now have **{pts}** point{'s' if pts!=1 else ''} this game.\n"
+                        f"{SEP}"
+                    ), color=EMERALD,
+                )
+                e.set_footer(text="⚜  Oblivion Empire  ·  Next quote coming up…",
+                             icon_url=logo_url() or discord.utils.MISSING)
                 await message.channel.send(embed=e)
                 await asyncio.sleep(3)
                 await _quote_next(message.channel, cid)
