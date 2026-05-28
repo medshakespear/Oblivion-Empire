@@ -1256,6 +1256,7 @@ async def on_ready():
 
 async def main():
     async with bot:
+        await bot.load_extension("empire")
         await bot.load_extension("games")
         await bot.start(os.getenv("DISCORD_TOKEN"))
 
